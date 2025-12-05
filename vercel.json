@@ -1,8 +1,4 @@
 {
-  "functions": {
-    "api/run.py": {
-    }
-  },
   "crons": [
     {
       "path": "/api/run",

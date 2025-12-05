@@ -3,6 +3,7 @@ import requests
 from lxml import etree
 from datetime import datetime, date
 
+
 from dotenv import load_dotenv
 load_dotenv()
 

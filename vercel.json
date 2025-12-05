@@ -1,6 +1,14 @@
 {
-    "crons": [
-      { "path": "/api/sync_lovdata", "schedule": "15 1 * * *" }
-    ]
-  }
-  
+  "functions": {
+    "api/run.py": {
+      "runtime": "python3.11",
+      "maxDuration": 300
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/run",
+      "schedule": "0 9 * * 1"
+    }
+  ]
+}

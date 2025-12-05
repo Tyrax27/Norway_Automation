@@ -1,17 +1,18 @@
 {
   "functions": {
     "api/run.py": {
-      "runtime": "python@3.12",
-      "maxDuration": 300
+      "maxDuration": 300,
+      "memory": 1024
     }
   },
   "routes": [
-    { "src": "/api/run", "dest": "api/run.py" }
+    { "src": "/api/run", "dest": "/api/run.py" },
+    { "handle": "filesystem" }
   ],
   "crons": [
     {
       "path": "/api/run",
-      "schedule": "0 7 * * 1"
+      "schedule": "0 6 * * 1"
     }
   ]
 }

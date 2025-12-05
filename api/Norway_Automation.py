@@ -3,10 +3,6 @@ import requests
 from lxml import etree
 from datetime import datetime, date
 
-
-from dotenv import load_dotenv
-load_dotenv()
-
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -518,21 +514,18 @@ def print_final_insertion_plan(kept_laws, reg_map):
 def sheets_service():
     log("[sheets_service] building Google Sheets client")
 
-    sa_file = os.environ.get("GOOGLE_SA_JSON_FILE")
-    if sa_file:
-        log(f"[sheets_service] using SA file: {sa_file}")
-        with open(sa_file, "r", encoding="utf-8") as f:
-            sa_json = json.load(f)
-    else:
-        raw = os.environ.get("GOOGLE_SA_JSON", "")
-        log(f"[sheets_service] GOOGLE_SA_JSON length: {len(raw)}")
-        sa_json = json.loads(raw)
+    raw = os.environ.get("GOOGLE_SA_JSON", "")
+    if not raw:
+        raise ValueError("Missing GOOGLE_SA_JSON env var")
+
+    sa_json = json.loads(raw)
 
     creds = service_account.Credentials.from_service_account_info(
         sa_json,
         scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
     return build("sheets", "v4", credentials=creds)
+
 
 def get_sheet_id(svc):
     ss = svc.spreadsheets().get(spreadsheetId=SHEET_ID).execute()

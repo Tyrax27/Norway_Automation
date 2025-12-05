@@ -1,5 +1,5 @@
 import os
-from Norway_Automation import handler as norway_handler  # api/Norway_Automation.py
+from Norway_Automation import handler as scrape_handler
 
 def handler(request):
     # Optional security check for cron
@@ -11,7 +11,7 @@ def handler(request):
             "body": "unauthorized"
         }
 
-    result = norway_handler(None)
+    result = scrape_handler(None)
     return {
         "statusCode": 200,
         "body": str(result)

@@ -1,7 +1,7 @@
 import os
-from Norway_Automation import handler  # or from api.Norway_Automation import handler
+from Norway_Automation import handler as norway_handler  # api/Norway_Automation.py
 
-def main(request):
+def handler(request):
     # Optional security check for cron
     secret = os.environ.get("CRON_SECRET")
     provided = request.headers.get("x-vercel-cron-secret")
@@ -11,7 +11,7 @@ def main(request):
             "body": "unauthorized"
         }
 
-    result = handler(None)
+    result = norway_handler(None)
     return {
         "statusCode": 200,
         "body": str(result)

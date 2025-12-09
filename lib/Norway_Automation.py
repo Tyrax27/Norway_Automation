@@ -26,10 +26,6 @@ def log(msg=""):
     print(msg, flush=True)
 
 def first_text_any(root, names):
-    """
-    Find first non-empty text among any tag local-names in `names`.
-    Tries exact name and lowercase name to be robust to casing.
-    """
     for n in names:
         for cand in (n, n.lower()):
             els = root.xpath(f".//*[local-name()='{cand}']")
@@ -71,7 +67,6 @@ def any_past_or_today_date(dates_list):
     return False
 
 
-# Norwegian month names for "Fra 1. januar 2026"
 MONTH_MAP = {
     "januar": "01",
     "februar": "02",
@@ -88,13 +83,6 @@ MONTH_MAP = {
 }
 
 def find_effective_dates_in_text(text_full):
-    """
-    Pull effective dates from Norwegian free text.
-    Returns list of ISO dates YYYY-MM-DD.
-    Handles missing whitespace like "I kraft fra2025-10-01".
-    Also supports multiple dates separated by comma.
-    Accepts both Bokmål "fra" and Nynorsk "frå".
-    """
     found = []
 
     for m in re.finditer(
@@ -130,10 +118,6 @@ def find_effective_dates_in_text(text_full):
 
 
 def text_says_effective_date_not_fixed(text_full: str) -> bool:
-    """
-    Detect Norwegian formulations meaning not yet in force because
-    entry-into-force is set later by the King / not fixed.
-    """
     t = (text_full or "").lower()
 
     patterns = [
@@ -183,12 +167,6 @@ def extract_tar_bz2(blob, label):
 # FILENAME-BASED IDS/URLS
 # =========================
 def derive_date_and_suffix_from_filename(filename: str, prefix: str):
-    """
-    prefix: "nl" or "sf"
-    expects: nl-YYYYMMDD-<num>.xml or sf-YYYYMMDD-<num>.xml
-    <num> can be 1+ digits (e.g., 003, 44, 1413).
-    returns (YYYY-MM-DD, "<num_str>")
-    """
     if not filename:
         return ("", "")
 
@@ -217,10 +195,6 @@ def derive_law_id_from_filename(filename: str):
 
 
 def build_public_law_url(doc_id: str = "", filename: str = ""):
-    """
-    Always prefer filename-derived pattern:
-    https://lovdata.no/dokument/NL/lov/YYYY-MM-DD(-n)
-    """
     if filename:
         ref = derive_law_id_from_filename(filename)
         if ref:
@@ -240,9 +214,6 @@ def build_public_law_url(doc_id: str = "", filename: str = ""):
 
 
 def derive_reg_id_from_filename(filename: str):
-    """
-    sf/sf-YYYYMMDD-<num>.xml -> forskrift/YYYY-MM-DD(-n)
-    """
     date_iso, suffix_str = derive_date_and_suffix_from_filename(filename, "sf")
     if not date_iso:
         return ""
@@ -260,10 +231,6 @@ def derive_reg_date_from_filename(filename: str):
 
 
 def build_public_reg_url(doc_id: str = "", filename: str = ""):
-    """
-    Filename-derived regulation URL:
-    https://lovdata.no/dokument/SF/forskrift/YYYY-MM-DD(-n)
-    """
     if filename:
         rid = derive_reg_id_from_filename(filename)
         if rid:
@@ -313,7 +280,6 @@ def parse_law_xml(xml_bytes):
     text_full = etree.tostring(root, encoding="unicode", method="text")
     text_lc = (text_full or "").lower()
 
-    # 1) Positive in-force candidates
     positive_tag_candidates = all_text_any(
         root,
         [
@@ -334,33 +300,39 @@ def parse_law_xml(xml_bytes):
     ))
     effective_candidates = list(dict.fromkeys([c.strip() for c in effective_candidates if c and c.strip()]))
 
-    # 2) Explicit not-in-force detection
     explicit_not_in_force = (
         "ikke i kraft" in text_lc or
         "ikkje i kraft" in text_lc or
         (in_force_raw or "").lower().strip() in ("false", "0", "no", "nei")
     )
 
-    # 3) Status logic
     if explicit_not_in_force and not any_past_or_today_date(positive_candidates):
         status = "not_in_force"
         reason = "explicit ikke/ikkje i kraft and no past/today positive entry-into-force date"
+
     elif any_future_date(positive_candidates):
         status = "future"
         reason = "future positive entry-into-force date found (tags or text)"
+
     elif text_says_effective_date_not_fixed(text_full) and not any_past_or_today_date(positive_candidates):
         status = "future"
         reason = "entry into force not fixed (Kongen fastsetter/bestemmer)"
+
     elif any_past_or_today_date(positive_candidates):
         status = "in_force"
         reason = "positive entry-into-force date <= today found (tags or text)"
+
     else:
         raw_lc = (in_force_raw or "").lower().strip()
-        raw_has_not_in_force = ("ikke i kraft" in raw_lc or "ikkje i kraft" in raw_lc)
+
+        raw_has_not_in_force = (
+            "ikke i kraft" in raw_lc or "ikkje i kraft" in raw_lc
+        )
         raw_has_in_force = (
             raw_lc in ("true", "1", "yes", "ja") or
             ("i kraft" in raw_lc and "ikke" not in raw_lc and "ikkje" not in raw_lc)
         )
+
         if raw_has_not_in_force or (access_removed_date or "").strip():
             status = "not_in_force"
             reason = "raw inForce indicates not in force / accessRemovedDate"
@@ -598,12 +570,9 @@ def color_rows_orange(svc, sheet_id, row_numbers_1based):
 
 
 # =========================
-# MAIN SCRAPER HANDLER
+# MAIN SCRAPE ENTRYPOINT
 # =========================
-def handler(request=None):
-    if not SHEET_ID:
-        raise ValueError("Missing GOOGLE_SHEET_ID env var")
-
+def run_scrape(request=None):
     log("=======================================")
     log("START Norway Lovdata public scrape run")
     log("=======================================")
@@ -614,7 +583,6 @@ def handler(request=None):
     laws_files = extract_tar_bz2(laws_blob, "laws")
     regs_files = extract_tar_bz2(regs_blob, "regulations")
 
-    # ---- Parse regulations -> map by law ref ----
     reg_map = {}
     for rname, rb in regs_files.items():
         try:
@@ -636,7 +604,6 @@ def handler(request=None):
         except Exception as e:
             log(f"[reg parse fail] {rname}: {e}")
 
-    # ---- Parse all laws ----
     candidate_laws = []
     for lname, lb in laws_files.items():
         try:
@@ -718,3 +685,9 @@ def handler(request=None):
         "rows_written": len(output_rows),
         "ambiguous_colored": len(ambiguous_rows)
     }
+
+# Alias for compatibility
+handler = run_scrape
+
+if __name__ == "__main__":
+    print(run_scrape(None))

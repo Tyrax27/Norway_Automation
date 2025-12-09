@@ -828,6 +828,8 @@ def run_scrape(request=None):
     scraped_urls = set()
     rows_to_append = []
     ambiguous_positions_new = []
+    seen_run_urls = set()
+
 
     # Build deduped / update-aware append set
     for row in output_rows:
@@ -840,22 +842,38 @@ def run_scrape(request=None):
 
         key = (title.lower(), datev)
 
+        # --- NEW URL-FIRST DEDUPE ---
+        # If this exact URL is already in the sheet OR already queued in this run, skip it.
+        if url:
+            if url in existing_urls or url in seen_run_urls:
+                log(f"[dedupe-url] skipping duplicate URL: {url}")
+                continue
+
+        # --- EXISTING TITLE+DATE LOGIC ---
         if key in existing_map:
             existing_row = existing_map[key]
             existing_url = (existing_row.get("url") or "").strip()
 
-            # Rule 1: H and S already exist => skip
+            # If same URL already there, skip
             if existing_url == url:
                 continue
 
-            # Rule 2: H exists but S different => update S
+            # If different URL for same title+date, update S/M/E
             if url and existing_row["row"]:
-                log(f"[dedupe] updating S/M/E at row {existing_row['row']} for key={key}")
+                log(f"[dedupe-key] updating S/M/E at row {existing_row['row']} for key={key}")
                 update_existing_row_fields(svc, existing_row["row"], url, row.get("type"))
-                # also update our local map so later comparisons are correct
                 existing_map[key]["url"] = url
                 existing_urls.add(url)
             continue
+
+        # --- BRAND NEW ROW ---
+        rows_to_append.append(row)
+        if row.get("status") == "ambiguous":
+            ambiguous_positions_new.append(len(rows_to_append) - 1)
+
+        if url:
+            seen_run_urls.add(url)
+
 
         # Not found => append new row
         pos_new = len(rows_to_append)

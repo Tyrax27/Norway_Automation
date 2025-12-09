@@ -678,7 +678,7 @@ def color_rows_orange(svc, sheet_id, row_numbers_1based):
 # =========================
 # MAIN
 # =========================
-def handler(request=None):
+def handler(request):
     log("=======================================")
     log("START Norway Lovdata public scrape run")
     log("=======================================")
@@ -798,4 +798,6 @@ def handler(request=None):
 
 
 if __name__ == "__main__":
-    print(handler(None))
+    result = handler(None)
+    print(result)
+

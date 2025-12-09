@@ -1,8 +1,15 @@
 {
-  "crons": [
+  "version": 2,
+  "builds": [
     {
-      "path": "/api/run",
-      "schedule": "0 9 * * 1"
+      "src": "api/run.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/run",
+      "dest": "api/run.py"
     }
   ]
 }

@@ -1,18 +1,15 @@
-import os
 from Norway_Automation import handler as scrape_handler
 
 def handler(request):
-    # Optional security check for cron
-    secret = os.environ.get("CRON_SECRET")
-    provided = request.headers.get("x-vercel-cron-secret")
-    if secret and provided != secret:
+    try:
+        result = scrape_handler(None)
         return {
-            "statusCode": 401,
-            "body": "unauthorized"
+            "statusCode": 200,
+            "body": str(result)
         }
-
-    result = scrape_handler(None)
-    return {
-        "statusCode": 200,
-        "body": str(result)
-    }
+    except Exception as e:
+        # Helpful failure response for Vercel logs + quick debugging
+        return {
+            "statusCode": 500,
+            "body": f"Error running scrape: {str(e)}"
+        }

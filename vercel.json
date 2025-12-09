@@ -1,0 +1,8 @@
+{
+    "functions": {
+      "api/Run_Automation.py": {
+        "maxDuration": 300
+      }
+    }
+  }
+  

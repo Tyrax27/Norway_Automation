@@ -501,10 +501,10 @@ def write_block(svc, start_row_1based, rows):
     urls   = [[r.get("url", "")] for r in rows]
     tvals  = [[2] if r.get("type") == "reg" else [""] for r in rows]
 
-    # NEW: dropdown values
+    # Column M always set
     mvals = [["Secondary"] if r.get("type") == "reg" else ["Primary"] for r in rows]
-    evals = [["Rule/Regulation (non-EU)"] if r.get("type") == "reg" else [""] for r in rows]
 
+    # Write C, H, S, T, M as before
     svc.spreadsheets().values().update(
         spreadsheetId=SHEET_ID,
         range=f"{TAB_NAME}!C{start_row_1based}:C{start_row_1based+n-1}",
@@ -533,20 +533,31 @@ def write_block(svc, start_row_1based, rows):
         body={"values": tvals}
     ).execute()
 
-    # NEW: write E and M dropdown columns
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!E{start_row_1based}:E{start_row_1based+n-1}",
-        valueInputOption="RAW",
-        body={"values": evals}
-    ).execute()
-
     svc.spreadsheets().values().update(
         spreadsheetId=SHEET_ID,
         range=f"{TAB_NAME}!M{start_row_1based}:M{start_row_1based+n-1}",
         valueInputOption="RAW",
         body={"values": mvals}
     ).execute()
+
+    # NEW: only write E for regs, leave laws completely untouched
+    e_updates = []
+    for i, r in enumerate(rows):
+        if r.get("type") == "reg":
+            row_num = start_row_1based + i
+            e_updates.append({
+                "range": f"{TAB_NAME}!E{row_num}",
+                "values": [["Rule/Regulation (non-EU)"]]
+            })
+
+    if e_updates:
+        svc.spreadsheets().values().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={
+                "valueInputOption": "RAW",
+                "data": e_updates
+            }
+        ).execute()
 
     log(f"[write_block] ✅ wrote {n} rows starting at row {start_row_1based}")
 

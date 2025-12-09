@@ -1,19 +1,27 @@
+import sys
+import os
 import traceback
-from lib.Norway_Automation import handler as scrape_handler
 
+# Add lib to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
+
+# Import at the function level to avoid module-level execution
 def handler(request):
     try:
-        result = scrape_handler(None)
+        # Import here instead of at module level
+        from Norway_Automation import handler as scrape_handler
+        
+        result = scrape_handler(request)
         return {
             "statusCode": 200,
-            "headers": {"content-type": "application/json"},
+            "headers": {"Content-Type": "application/json"},
             "body": str(result)
         }
     except Exception as e:
         tb = traceback.format_exc()
-        print("SCRAPE CRASHED:\n", tb, flush=True)  # goes to Vercel logs
+        print("SCRAPE CRASHED:\n", tb, flush=True)
         return {
             "statusCode": 500,
-            "headers": {"content-type": "text/plain"},
+            "headers": {"Content-Type": "text/plain"},
             "body": f"Error:\n{e}\n\nTraceback:\n{tb}"
         }

@@ -501,6 +501,10 @@ def write_block(svc, start_row_1based, rows):
     urls   = [[r.get("url", "")] for r in rows]
     tvals  = [[2] if r.get("type") == "reg" else [""] for r in rows]
 
+    # NEW: dropdown values
+    mvals = [["Secondary"] if r.get("type") == "reg" else ["Primary"] for r in rows]
+    evals = [["Rule/Regulation (non-EU)"] if r.get("type") == "reg" else [""] for r in rows]
+
     svc.spreadsheets().values().update(
         spreadsheetId=SHEET_ID,
         range=f"{TAB_NAME}!C{start_row_1based}:C{start_row_1based+n-1}",
@@ -529,7 +533,23 @@ def write_block(svc, start_row_1based, rows):
         body={"values": tvals}
     ).execute()
 
+    # NEW: write E and M dropdown columns
+    svc.spreadsheets().values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"{TAB_NAME}!E{start_row_1based}:E{start_row_1based+n-1}",
+        valueInputOption="RAW",
+        body={"values": evals}
+    ).execute()
+
+    svc.spreadsheets().values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"{TAB_NAME}!M{start_row_1based}:M{start_row_1based+n-1}",
+        valueInputOption="RAW",
+        body={"values": mvals}
+    ).execute()
+
     log(f"[write_block] ✅ wrote {n} rows starting at row {start_row_1based}")
+
 
 def color_rows_orange(svc, sheet_id, row_numbers_1based):
     if not row_numbers_1based:
@@ -567,6 +587,130 @@ def color_rows_orange(svc, sheet_id, row_numbers_1based):
     ).execute()
 
     log("[color_rows_orange] ✅ done")
+
+def read_existing_rows(svc):
+    """
+    Reads existing Title (C), Date (H), URL (S) from row 2 down to last row.
+    Returns:
+      existing_map: {(title_lc, date_iso): {"row": r, "url": url}}
+      existing_urls: set(urls)
+      last_row: int
+    """
+    last_row = get_last_row(svc)
+    if last_row < 2:
+        return {}, set(), last_row
+
+    # Batch get C, H, S for existing rows
+    res = svc.spreadsheets().values().batchGet(
+        spreadsheetId=SHEET_ID,
+        ranges=[
+            f"{TAB_NAME}!C2:C{last_row}",
+            f"{TAB_NAME}!H2:H{last_row}",
+            f"{TAB_NAME}!S2:S{last_row}"
+        ]
+    ).execute()
+
+    c_vals = res["valueRanges"][0].get("values", [])
+    h_vals = res["valueRanges"][1].get("values", [])
+    s_vals = res["valueRanges"][2].get("values", [])
+
+    def v_at(vals, i):
+        if i < len(vals) and vals[i]:
+            return vals[i][0]
+        return ""
+
+    existing_map = {}
+    existing_urls = set()
+
+    n = max(len(c_vals), len(h_vals), len(s_vals))
+    for i in range(n):
+        title = v_at(c_vals, i).strip()
+        datev = v_at(h_vals, i).strip()
+        url   = v_at(s_vals, i).strip()
+
+        if not title and not datev and not url:
+            continue
+
+        row_num = 2 + i  # because we started at row 2
+        key = (title.lower(), datev)
+
+        # keep first occurrence; you can change if you prefer last occurrence
+        if key not in existing_map:
+            existing_map[key] = {"row": row_num, "url": url}
+
+        if url:
+            existing_urls.add(url)
+
+    return existing_map, existing_urls, last_row
+
+
+def update_existing_row_fields(svc, row_number_1based, new_url, row_type):
+    """Update S always, and M/E depending on row_type."""
+    data = [
+        {
+            "range": f"{TAB_NAME}!S{row_number_1based}",
+            "values": [[new_url]]
+        },
+        {
+            "range": f"{TAB_NAME}!M{row_number_1based}",
+            "values": [["Secondary"] if row_type == "reg" else ["Primary"]]
+        }
+    ]
+
+    if row_type == "reg":
+        data.append({
+            "range": f"{TAB_NAME}!E{row_number_1based}",
+            "values": [["Rule/Regulation (non-EU)"]]
+        })
+
+    svc.spreadsheets().values().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={
+            "valueInputOption": "RAW",
+            "data": data
+        }
+    ).execute()
+
+
+
+def color_rows_black(svc, sheet_id, row_numbers_1based):
+    if not row_numbers_1based:
+        return
+
+    log(f"[color_rows_black] coloring {len(row_numbers_1based)} stale rows black")
+
+    requests_body = []
+    for r in row_numbers_1based:
+        start_index = r - 1
+        end_index = r
+        requests_body.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_index,
+                    "endRowIndex": end_index
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {
+                            "red": 0.0,
+                            "green": 0.0,
+                            "blue": 0.0
+                        }
+                    }
+                },
+                "fields": "userEnteredFormat.backgroundColor"
+            }
+        })
+
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={"requests": requests_body}
+    ).execute()
+
+    log("[color_rows_black] ✅ done")
+
+
 
 
 # =========================
@@ -666,14 +810,73 @@ def run_scrape(request=None):
 
     svc = sheets_service()
     sheet_id = get_sheet_id(svc)
-    last_row = get_last_row(svc)
-    start_row = last_row + 1
 
-    insert_rows_with_format(svc, sheet_id, start_row, len(output_rows))
-    write_block(svc, start_row, output_rows)
+    # Read current sheet state
+    existing_map, existing_urls, last_row = read_existing_rows(svc)
 
-    ambiguous_rows = [start_row + idx for idx in ambiguous_positions]
-    color_rows_orange(svc, sheet_id, ambiguous_rows)
+    scraped_urls = set()
+    rows_to_append = []
+    ambiguous_positions_new = []
+
+    # Build deduped / update-aware append set
+    for row in output_rows:
+        title = (row.get("title") or "").strip()
+        datev = (row.get("date") or "").strip()
+        url   = (row.get("url") or "").strip()
+
+        if url:
+            scraped_urls.add(url)
+
+        key = (title.lower(), datev)
+
+        if key in existing_map:
+            existing_row = existing_map[key]
+            existing_url = (existing_row.get("url") or "").strip()
+
+            # Rule 1: H and S already exist => skip
+            if existing_url == url:
+                continue
+
+            # Rule 2: H exists but S different => update S
+            if url and existing_row["row"]:
+                log(f"[dedupe] updating S/M/E at row {existing_row['row']} for key={key}")
+                update_existing_row_fields(svc, existing_row["row"], url, row.get("type"))
+                # also update our local map so later comparisons are correct
+                existing_map[key]["url"] = url
+                existing_urls.add(url)
+            continue
+
+        # Not found => append new row
+        pos_new = len(rows_to_append)
+        rows_to_append.append(row)
+
+        if row.get("status") == "ambiguous":
+            ambiguous_positions_new.append(pos_new)
+
+    # Append only new rows
+    log(f"[handler] new rows to append after dedupe: {len(rows_to_append)}")
+
+    if rows_to_append:
+        start_row = last_row + 1
+        insert_rows_with_format(svc, sheet_id, start_row, len(rows_to_append))
+        write_block(svc, start_row, rows_to_append)
+
+        ambiguous_rows = [start_row + idx for idx in ambiguous_positions_new]
+        color_rows_orange(svc, sheet_id, ambiguous_rows)
+    else:
+        ambiguous_rows = []
+
+    # Rule 3: If S in sheet not in scrape => black row
+    stale_rows = []
+    for key, info in existing_map.items():
+        url_existing = (info.get("url") or "").strip()
+        row_num = info.get("row")
+
+        if url_existing and url_existing not in scraped_urls:
+            stale_rows.append(row_num)
+
+    color_rows_black(svc, sheet_id, stale_rows)
+
 
     log("=======================================")
     log("DONE")

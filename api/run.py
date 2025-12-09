@@ -1,46 +1,21 @@
-import os, json, traceback
-from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+import os
+from .Norway_Automation import handler as scrape_handler  # <-- relative import
 
-from Norway_Automation import handler as scrape_handler
-
-
-class handler(BaseHTTPRequestHandler):
+def handler(request):
     """
-    Vercel Python Serverless Function entrypoint.
-    Route: /api/run
-    Supports GET and POST.
+    Vercel serverless entrypoint.
+    Visit /api/run to execute.
     """
 
-    def do_GET(self):
-        self._handle()
+    # (Optional) shared-secret protection if you ever want it later
+    secret = os.environ.get("CRON_SECRET")
+    provided = request.headers.get("x-vercel-cron-secret")
+    if secret and provided != secret:
+        return {"statusCode": 401, "body": "unauthorized"}
 
-    def do_POST(self):
-        self._handle()
-
-    def _handle(self):
-        # ---- Optional simple auth (recommended) ----
-        # Set RUN_TOKEN in Vercel env.
-        expected = os.environ.get("RUN_TOKEN")
-        qs = parse_qs(urlparse(self.path).query)
-        provided = self.headers.get("x-run-token") or qs.get("token", [None])[0]
-
-        if expected and provided != expected:
-            self._send_json(401, {"error": "unauthorized"})
-            return
-
-        try:
-            result = scrape_handler(None)
-            self._send_json(200, result)
-        except Exception as e:
-            self._send_json(500, {
-                "error": str(e),
-                "trace": traceback.format_exc()
-            })
-
-    def _send_json(self, status, payload):
-        body = json.dumps(payload, ensure_ascii=False)
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(body.encode("utf-8"))
+    try:
+        result = scrape_handler(None)
+        return {"statusCode": 200, "body": str(result)}
+    except Exception as e:
+        # surface real error in logs + response
+        return {"statusCode": 500, "body": f"Error: {e}"}

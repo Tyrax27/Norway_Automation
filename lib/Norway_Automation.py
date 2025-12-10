@@ -816,7 +816,7 @@ def run_scrape(request=None):
     kept_laws = kept_laws[:LIMIT]
     log(f"[handler] limiting to {len(kept_laws)} laws")
 
-    # ---- Build output rows: law then regs ----
+    # ---- Build output rows: law then regs (per-law reg dedupe only) ----
     output_rows = []
     ambiguous_positions = []
 
@@ -835,16 +835,26 @@ def run_scrape(request=None):
         law_id_key = (law.get("id") or "").replace("NL/", "")
         regs_for_law = reg_map.get(law_id_key, [])
 
+        # ✅ Per-law regulation dedupe (only within this law block)
+        seen_reg_urls_for_this_law = set()
+
         for reg in regs_for_law:
-            # Regulations are allowed to duplicate
+            reg_url = (reg.get("url") or "").strip()
+
+            if reg_url and reg_url in seen_reg_urls_for_this_law:
+                continue
+
             output_rows.append({
                 "type": "reg",
                 "title": reg.get("title", ""),
                 "date": reg.get("date", ""),
-                "url": reg.get("url", "")
+                "url": reg_url
             })
 
-    log(f"[handler] total rows (no in-run dedupe now): {len(output_rows)}")
+            if reg_url:
+                seen_reg_urls_for_this_law.add(reg_url)
+
+    log(f"[handler] total rows (per-law reg dedupe only): {len(output_rows)}")
 
     # ---- Sheets: dedupe only for LAWS ----
     svc = sheets_service()

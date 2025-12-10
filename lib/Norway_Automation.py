@@ -437,6 +437,7 @@ def get_last_row(svc):
     """
     Last used row = last row where ANY of these columns has a value:
     C, H, S, T, M, E.
+    Minimum returned row is 2 (template row).
     """
     ranges = [
         f"{TAB_NAME}!C:C",
@@ -461,10 +462,10 @@ def get_last_row(svc):
 
     max_len = max((len(c) for c in cols), default=0)
 
-    last_used = 1
+    last_used = 2  # template row minimum
     for i in range(max_len):
         if any(cell(col, i) for col in cols):
-            last_used = i + 1
+            last_used = max(last_used, i + 1)
 
     log(f"[get_last_row] last used row (any value in C/H/S/T/M/E) = {last_used}")
     return last_used
@@ -670,22 +671,22 @@ def color_rows_black(svc, sheet_id, row_numbers_1based):
 
 def read_existing_rows(svc):
     """
-    Reads existing Title (C), Date (H), URL (S) from row 2 down to last row.
+    Reads existing Title (C), Date (H), URL (S) from row 3 down to last row.
     Returns:
       existing_map: {(title_lc, date_iso): {"row": r, "url": url}}
       existing_urls: set(urls)
       last_row: int
     """
     last_row = get_last_row(svc)
-    if last_row < 2:
+    if last_row < 3:
         return {}, set(), last_row
 
     res = svc.spreadsheets().values().batchGet(
         spreadsheetId=SHEET_ID,
         ranges=[
-            f"{TAB_NAME}!C2:C{last_row}",
-            f"{TAB_NAME}!H2:H{last_row}",
-            f"{TAB_NAME}!S2:S{last_row}"
+            f"{TAB_NAME}!C3:C{last_row}",
+            f"{TAB_NAME}!H3:H{last_row}",
+            f"{TAB_NAME}!S3:S{last_row}"
         ]
     ).execute()
 
@@ -710,7 +711,7 @@ def read_existing_rows(svc):
         if not title and not datev and not url:
             continue
 
-        row_num = 2 + i
+        row_num = 3 + i  # start from row 3
         key = (title.lower(), datev)
 
         if key not in existing_map:
@@ -850,7 +851,7 @@ def run_scrape(request=None):
 
     log(f"[handler] total rows before in-run dedupe: {len(output_rows)}")
 
-    # ---- In-run URL dedupe (important: regs can repeat under multiple laws) ----
+    # ---- In-run URL dedupe (regs can repeat under multiple laws) ----
     deduped_output = []
     seen_urls_run = set()
 
@@ -887,7 +888,7 @@ def run_scrape(request=None):
 
         key = (title.lower(), datev)
 
-        # URL-first dedupe against sheet and against current run queue
+        # URL-first dedupe against sheet and current run queue
         if url and (url in existing_urls or url in seen_run_urls):
             log(f"[dedupe-url] skipping duplicate URL: {url}")
             continue
@@ -921,6 +922,9 @@ def run_scrape(request=None):
 
     if rows_to_append:
         start_row = last_row + 1
+        if start_row < 3:
+            start_row = 3  # safety: always start at row 3+
+
         insert_rows_with_format(svc, sheet_id, start_row, len(rows_to_append))
         write_block(svc, start_row, rows_to_append)
 

@@ -437,7 +437,6 @@ def get_last_row(svc):
     """
     Last used row = last row where ANY of these columns has a value:
     C, H, S, M, E.
-    (We no longer rely on T.)
     Minimum returned row is 2 (template row).
     """
     ranges = [
@@ -523,7 +522,6 @@ def write_block(svc, start_row_1based, rows):
     """
     Writes rows.
     - Writes C/H/S/M.
-    - DOES NOT write T anymore.
     - Writes E ONLY for regulations.
     - Laws never overwrite E.
     """
@@ -672,10 +670,12 @@ def read_existing_context(svc):
       primary_dates: set(date) for Primary rows only
       regs_under_primary: dict{primary_url: set(reg_url)} based on M blocks
       all_url_rows: list of (row_num, url) for blackening
+      primary_blocks: list of dicts:
+          { "url": primary_url, "row": primary_row, "end_row": end_row }
     """
     last_row = get_last_row(svc)
     if last_row < 3:
-        return last_row, set(), set(), {}, []
+        return last_row, set(), set(), {}, [], []
 
     res = svc.spreadsheets().values().batchGet(
         spreadsheetId=SHEET_ID,
@@ -698,8 +698,8 @@ def read_existing_context(svc):
     primary_pairs = set()
     primary_dates = set()
     regs_under_primary = {}  # {primary_url: set(reg_url)}
-
     all_url_rows = []
+    primary_rows = []        # list of {"url": u, "row": row_num}
 
     current_primary_url = None
 
@@ -725,11 +725,27 @@ def read_existing_context(svc):
             if current_primary_url and current_primary_url not in regs_under_primary:
                 regs_under_primary[current_primary_url] = set()
 
+            primary_rows.append({"url": current_primary_url, "row": row_num})
+
         else:
             if current_primary_url and u:
                 regs_under_primary.setdefault(current_primary_url, set()).add(u)
 
-    return last_row, primary_pairs, primary_dates, regs_under_primary, all_url_rows
+    # compute end_row for each primary block
+    primary_blocks = []
+    for idx, p in enumerate(primary_rows):
+        start_row = p["row"]
+        if idx + 1 < len(primary_rows):
+            end_row = primary_rows[idx + 1]["row"] - 1
+        else:
+            end_row = last_row
+        primary_blocks.append({
+            "url": p["url"],
+            "row": start_row,
+            "end_row": end_row
+        })
+
+    return last_row, primary_pairs, primary_dates, regs_under_primary, all_url_rows, primary_blocks
 
 
 # =========================
@@ -746,6 +762,7 @@ def run_scrape(request=None):
     laws_files = extract_tar_bz2(laws_blob, "laws")
     regs_files = extract_tar_bz2(regs_blob, "regulations")
 
+    # ---- Build regulation map keyed by law id ----
     reg_map = {}
     for rname, rb in regs_files.items():
         try:
@@ -767,6 +784,7 @@ def run_scrape(request=None):
         except Exception as e:
             log(f"[reg parse fail] {rname}: {e}")
 
+    # ---- Parse laws ----
     candidate_laws = []
     for lname, lb in laws_files.items():
         try:
@@ -799,14 +817,29 @@ def run_scrape(request=None):
     kept_laws = kept_laws[:LIMIT]
     log(f"[handler] limiting to {len(kept_laws)} laws")
 
+    # ---- Read sheet context once ----
     svc = sheets_service()
     sheet_id = get_sheet_id(svc)
 
-    last_row, primary_pairs, primary_dates, regs_under_primary, all_url_rows = read_existing_context(svc)
+    (
+        last_row,
+        primary_pairs,
+        primary_dates,
+        regs_under_primary,
+        all_url_rows,
+        primary_blocks
+    ) = read_existing_context(svc)
 
-    output_rows_to_append = []
+    # map law_url -> primary block info
+    primary_block_by_url = {
+        b["url"]: b for b in primary_blocks if b["url"]
+    }
+
+    # ---- Build rows to append + rows to insert under existing laws ----
+    output_rows_to_append = []          # new laws + their regs (appended at bottom)
+    regs_to_insert_under_existing = {}  # law_url -> [reg rows to insert inside block]
     ambiguous_positions_new = []
-    scraped_urls = set()
+    scraped_urls = set()                # for blackening
 
     for law in kept_laws:
         law_title = law.get("title", "")
@@ -817,10 +850,11 @@ def run_scrape(request=None):
         if law_url:
             scraped_urls.add(law_url)
 
-        # PRIMARY dedupe: only (H,S)
-        if law_date and law_url and (law_date, law_url) in primary_pairs:
-            pass
-        else:
+        law_is_existing = bool(law_date and law_url and (law_date, law_url) in primary_pairs)
+
+        # -------- PRIMARY (LAW) DUPLICATION RULE --------
+        if not law_is_existing:
+            # new primary -> append
             output_rows_to_append.append({
                 "type": "law",
                 "title": law_title,
@@ -836,7 +870,7 @@ def run_scrape(request=None):
             if law_date and law_url:
                 primary_pairs.add((law_date, law_url))
 
-        # SECONDARY dedupe within law block on sheet + per-run
+        # -------- SECONDARY (REG) DUPLICATION RULE --------
         law_id_key = (law.get("id") or "").replace("NL/", "")
         regs_for_law = reg_map.get(law_id_key, [])
 
@@ -856,19 +890,58 @@ def run_scrape(request=None):
             if reg_url and reg_url in seen_reg_urls_for_this_law_run:
                 continue
 
-            output_rows_to_append.append({
+            reg_row = {
                 "type": "reg",
                 "title": reg_title,
                 "date": reg_date,
                 "url": reg_url
-            })
+            }
+
+            if law_is_existing:
+                # Insert under existing law's block, not at bottom
+                regs_to_insert_under_existing.setdefault(law_url, []).append(reg_row)
+            else:
+                # Law is new; regs follow it in appended block
+                output_rows_to_append.append(reg_row)
 
             if reg_url:
                 seen_reg_urls_for_this_law_run.add(reg_url)
 
-    log(f"[handler] rows to append after rules: {len(output_rows_to_append)}")
+    log(f"[handler] rows to append at bottom: {len(output_rows_to_append)}")
+    log(f"[handler] laws with new regs to insert under existing primaries: {len(regs_to_insert_under_existing)}")
 
+    # ---- Insert new regulations under existing law blocks ----
+    if regs_to_insert_under_existing:
+        # Prepare list of (end_row, law_url, reg_rows) and process from bottom to top
+        blocks_with_regs = []
+        for law_url, reg_rows in regs_to_insert_under_existing.items():
+            block = primary_block_by_url.get(law_url)
+            if not block:
+                log(f"[insert-existing] primary block not found for URL {law_url}, will append regs at bottom instead")
+                output_rows_to_append.extend(reg_rows)
+                continue
+            blocks_with_regs.append((block["end_row"], law_url, reg_rows))
+
+        # sort by end_row descending so inserts don't affect earlier blocks
+        blocks_with_regs.sort(key=lambda x: x[0], reverse=True)
+
+        for end_row, law_url, reg_rows in blocks_with_regs:
+            insertion_row = end_row + 1
+            count = len(reg_rows)
+            log(f"[insert-existing] inserting {count} new regs for law {law_url} at row {insertion_row}")
+            insert_rows_with_format(svc, sheet_id, insertion_row, count)
+            write_block(svc, insertion_row, reg_rows)
+
+            # update regs_under_primary for future runs
+            for r in reg_rows:
+                url = r.get("url")
+                if url:
+                    regs_under_primary.setdefault(law_url, set()).add(url)
+
+    # ---- Append block for new laws + their regs ----
     if output_rows_to_append:
+        # refresh last_row because we may have inserted rows above
+        last_row = get_last_row(svc)
         start_row = last_row + 1
         if start_row < 3:
             start_row = 3
@@ -881,6 +954,7 @@ def run_scrape(request=None):
     else:
         ambiguous_rows = []
 
+    # ---- Black out stale rows (all types) ----
     stale_rows = []
     for row_num, url_existing in all_url_rows:
         if url_existing and url_existing not in scraped_urls:
@@ -900,6 +974,7 @@ def run_scrape(request=None):
         "stale_blackened": len(stale_rows)
     }
 
+# Alias for compatibility
 handler = run_scrape
 
 if __name__ == "__main__":

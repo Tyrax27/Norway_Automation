@@ -16,7 +16,6 @@ REGS_PKG = "gjeldende-sentrale-forskrifter.tar.bz2"
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 TAB_NAME = "Norway Trial"
-LIMIT = 800
 
 
 # =========================
@@ -842,8 +841,7 @@ def run_scrape(request=None):
         reverse=True
     )
 
-    kept_laws = kept_laws[:LIMIT]
-    log(f"[handler] limiting to {len(kept_laws)} laws")
+    log(f"[handler] total kept laws (no LIMIT applied): {len(kept_laws)}")
 
     # ---- Read sheet context once ----
     svc = sheets_service()

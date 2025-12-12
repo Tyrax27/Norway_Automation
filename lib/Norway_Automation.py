@@ -267,7 +267,10 @@ def parse_law_xml(xml_bytes):
     date_promulgated = first_text_any(root, ["datePromulgated", "Datokode", "datokode"])
     corrected_date   = first_text_any(root, ["correctedDate"])
     last_amended_by  = first_text_any(root, ["lastAmendedBy", "Sist endret ved", "Sist endra ved"])
-    last_amended_ifr = first_text_any(root, ["lastAmendedInForceFrom", "Ikrafttredelse av siste endring", "Ikrafttreding av siste endring"])
+    last_amended_ifr = first_text_any(
+        root,
+        ["lastAmendedInForceFrom", "Ikrafttredelse av siste endring", "Ikrafttreding av siste endring"]
+    )
 
     department       = first_text_any(root, ["department", "Departement"])
     legal_area       = first_text_any(root, ["legalArea", "Rettsområde"])
@@ -275,52 +278,77 @@ def parse_law_xml(xml_bytes):
     content_heading  = first_text_any(root, ["contentHeading", "Innhold"])
     access_removed_date = first_text_any(root, ["accessRemovedDate", "access_removedDate"])
 
-    in_force_raw = first_text_any(root, ["inForce", "Ikke i kraft", "Ikkje i kraft", "Ikrafttredelse", "Ikrafttreding"])
+    in_force_raw = first_text_any(
+        root,
+        ["inForce", "Ikke i kraft", "Ikkje i kraft", "Ikrafttredelse", "Ikrafttreding"]
+    )
 
     text_full = etree.tostring(root, encoding="unicode", method="text")
     text_lc = (text_full or "").lower()
 
+    # --- collect effective date candidates from tags ---
     positive_tag_candidates = all_text_any(
         root,
         [
-            "inForceFrom", "effectiveFrom", "ikrafttredelse",
-            "ikraftFra", "ikraftFraDato", "iKraftFra", "ikrafttredelseDato"
+            "inForceFrom",
+            "effectiveFrom",
+            "ikrafttredelse",
+            "ikraftFra",
+            "ikraftFraDato",
+            "iKraftFra",
+            "ikrafttredelseDato",
         ]
     )
 
+    # --- collect effective date candidates from free text ---
     positive_text_candidates = find_effective_dates_in_text(text_full)
 
     positive_candidates = positive_tag_candidates + positive_text_candidates
-    positive_candidates = list(dict.fromkeys([c.strip() for c in positive_candidates if c and c.strip()]))
-
-    effective_candidates = positive_candidates[:]
-    effective_candidates.extend(all_text_any(
-        root,
-        ["lastAmendedInForceFrom", "Ikrafttredelse av siste endring", "Ikrafttreding av siste endring"]
-    ))
-    effective_candidates = list(dict.fromkeys([c.strip() for c in effective_candidates if c and c.strip()]))
-
-    explicit_not_in_force = (
-        "ikke i kraft" in text_lc or
-        "ikkje i kraft" in text_lc or
-        (in_force_raw or "").lower().strip() in ("false", "0", "no", "nei")
+    positive_candidates = list(
+        dict.fromkeys([c.strip() for c in positive_candidates if c and c.strip()])
     )
 
-    if explicit_not_in_force and not any_past_or_today_date(positive_candidates):
+    # effectiveCandidates = positive candidates plus last-amended in-force dates
+    effective_candidates = positive_candidates[:]
+    effective_candidates.extend(
+        all_text_any(
+            root,
+            ["lastAmendedInForceFrom", "Ikrafttredelse av siste endring", "Ikrafttreding av siste endring"]
+        )
+    )
+    effective_candidates = list(
+        dict.fromkeys([c.strip() for c in effective_candidates if c and c.strip()])
+    )
+
+    explicit_not_in_force = (
+        "ikke i kraft" in text_lc
+        or "ikkje i kraft" in text_lc
+        or (in_force_raw or "").lower().strip() in ("false", "0", "no", "nei")
+    )
+
+    # NEW: compute these once
+    has_past_or_today = any_past_or_today_date(positive_candidates)
+    has_future = any_future_date(positive_candidates)
+
+    if explicit_not_in_force and not has_past_or_today:
         status = "not_in_force"
         reason = "explicit ikke/ikkje i kraft and no past/today positive entry-into-force date"
 
-    elif any_future_date(positive_candidates):
-        status = "future"
-        reason = "future positive entry-into-force date found (tags or text)"
+    # If there is at least one past/today effective date, we treat the law as in force,
+    # even if there are also future dates (those are future amendments).
+    elif has_past_or_today:
+        status = "in_force"
+        reason = "positive entry-into-force date <= today found (tags or text)"
 
-    elif text_says_effective_date_not_fixed(text_full) and not any_past_or_today_date(positive_candidates):
+    # Entry into force delegated to the King, with no concrete dates
+    elif text_says_effective_date_not_fixed(text_full):
         status = "future"
         reason = "entry into force not fixed (Kongen fastsetter/bestemmer)"
 
-    elif any_past_or_today_date(positive_candidates):
-        status = "in_force"
-        reason = "positive entry-into-force date <= today found (tags or text)"
+    # Only future dates and no past/today ones
+    elif has_future:
+        status = "future"
+        reason = "future positive entry-into-force date found (tags or text)"
 
     else:
         raw_lc = (in_force_raw or "").lower().strip()
@@ -329,8 +357,8 @@ def parse_law_xml(xml_bytes):
             "ikke i kraft" in raw_lc or "ikkje i kraft" in raw_lc
         )
         raw_has_in_force = (
-            raw_lc in ("true", "1", "yes", "ja") or
-            ("i kraft" in raw_lc and "ikke" not in raw_lc and "ikkje" not in raw_lc)
+            raw_lc in ("true", "1", "yes", "ja")
+            or ("i kraft" in raw_lc and "ikke" not in raw_lc and "ikkje" not in raw_lc)
         )
 
         if raw_has_not_in_force or (access_removed_date or "").strip():

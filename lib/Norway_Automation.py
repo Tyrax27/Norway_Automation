@@ -118,7 +118,6 @@ def find_effective_dates_in_text(text_full):
 
 def text_says_effective_date_not_fixed(text_full: str) -> bool:
     t = (text_full or "").lower()
-
     patterns = [
         r"i\s*kraft\s*(?:fra|frå)\s*kongen\s*fastset",
         r"i\s*kraft\s*(?:fra|frå)\s*kongen\s*fastsetter",
@@ -129,7 +128,6 @@ def text_says_effective_date_not_fixed(text_full: str) -> bool:
         r"kongen\s*fastset",
         r"kongen\s*fastsetter",
     ]
-
     for p in patterns:
         if re.search(p, t):
             return True
@@ -168,30 +166,25 @@ def extract_tar_bz2(blob, label):
 def derive_date_and_suffix_from_filename(filename: str, prefix: str):
     if not filename:
         return ("", "")
-
     fn = filename.lower().split("/")[-1]
     m = re.search(rf"{prefix}-(\d{{8}})-(\d+)\.xml$", fn)
     if not m:
         return ("", "")
-
     yyyymmdd = m.group(1)
     suffix_str = m.group(2)
     yyyy, mm, dd = yyyymmdd[:4], yyyymmdd[4:6], yyyymmdd[6:8]
     date_iso = f"{yyyy}-{mm}-{dd}"
     return (date_iso, suffix_str)
 
-
 def derive_law_id_from_filename(filename: str):
     date_iso, suffix_str = derive_date_and_suffix_from_filename(filename, "nl")
     if not date_iso:
         return ""
-
     base = f"lov/{date_iso}"
     if suffix_str and int(suffix_str) != 0:
         n = str(int(suffix_str))
         return f"{base}-{n}"
     return base
-
 
 def build_public_law_url(doc_id: str = "", filename: str = ""):
     if filename:
@@ -211,23 +204,19 @@ def build_public_law_url(doc_id: str = "", filename: str = ""):
 
     return ""
 
-
 def derive_reg_id_from_filename(filename: str):
     date_iso, suffix_str = derive_date_and_suffix_from_filename(filename, "sf")
     if not date_iso:
         return ""
-
     base = f"forskrift/{date_iso}"
     if suffix_str and int(suffix_str) != 0:
         n = str(int(suffix_str))
         return f"{base}-{n}"
     return base
 
-
 def derive_reg_date_from_filename(filename: str):
     date_iso, _ = derive_date_and_suffix_from_filename(filename, "sf")
     return date_iso
-
 
 def build_public_reg_url(doc_id: str = "", filename: str = ""):
     if filename:
@@ -285,39 +274,24 @@ def parse_law_xml(xml_bytes):
     text_full = etree.tostring(root, encoding="unicode", method="text")
     text_lc = (text_full or "").lower()
 
-    # --- collect effective date candidates from tags ---
     positive_tag_candidates = all_text_any(
         root,
         [
-            "inForceFrom",
-            "effectiveFrom",
-            "ikrafttredelse",
-            "ikraftFra",
-            "ikraftFraDato",
-            "iKraftFra",
-            "ikrafttredelseDato",
+            "inForceFrom", "effectiveFrom", "ikrafttredelse",
+            "ikraftFra", "ikraftFraDato", "iKraftFra", "ikrafttredelseDato",
         ]
     )
-
-    # --- collect effective date candidates from free text ---
     positive_text_candidates = find_effective_dates_in_text(text_full)
 
     positive_candidates = positive_tag_candidates + positive_text_candidates
-    positive_candidates = list(
-        dict.fromkeys([c.strip() for c in positive_candidates if c and c.strip()])
-    )
+    positive_candidates = list(dict.fromkeys([c.strip() for c in positive_candidates if c and c.strip()]))
 
-    # effectiveCandidates = positive candidates plus last-amended in-force dates
     effective_candidates = positive_candidates[:]
-    effective_candidates.extend(
-        all_text_any(
-            root,
-            ["lastAmendedInForceFrom", "Ikrafttredelse av siste endring", "Ikrafttreding av siste endring"]
-        )
-    )
-    effective_candidates = list(
-        dict.fromkeys([c.strip() for c in effective_candidates if c and c.strip()])
-    )
+    effective_candidates.extend(all_text_any(
+        root,
+        ["lastAmendedInForceFrom", "Ikrafttredelse av siste endring", "Ikrafttreding av siste endring"]
+    ))
+    effective_candidates = list(dict.fromkeys([c.strip() for c in effective_candidates if c and c.strip()]))
 
     explicit_not_in_force = (
         "ikke i kraft" in text_lc
@@ -325,36 +299,24 @@ def parse_law_xml(xml_bytes):
         or (in_force_raw or "").lower().strip() in ("false", "0", "no", "nei")
     )
 
-    # NEW: compute these once
     has_past_or_today = any_past_or_today_date(positive_candidates)
     has_future = any_future_date(positive_candidates)
 
     if explicit_not_in_force and not has_past_or_today:
         status = "not_in_force"
         reason = "explicit ikke/ikkje i kraft and no past/today positive entry-into-force date"
-
-    # If there is at least one past/today effective date, we treat the law as in force,
-    # even if there are also future dates (those are future amendments).
     elif has_past_or_today:
         status = "in_force"
         reason = "positive entry-into-force date <= today found (tags or text)"
-
-    # Entry into force delegated to the King, with no concrete dates
     elif text_says_effective_date_not_fixed(text_full):
         status = "future"
         reason = "entry into force not fixed (Kongen fastsetter/bestemmer)"
-
-    # Only future dates and no past/today ones
     elif has_future:
         status = "future"
         reason = "future positive entry-into-force date found (tags or text)"
-
     else:
         raw_lc = (in_force_raw or "").lower().strip()
-
-        raw_has_not_in_force = (
-            "ikke i kraft" in raw_lc or "ikkje i kraft" in raw_lc
-        )
+        raw_has_not_in_force = ("ikke i kraft" in raw_lc or "ikkje i kraft" in raw_lc)
         raw_has_in_force = (
             raw_lc in ("true", "1", "yes", "ja")
             or ("i kraft" in raw_lc and "ikke" not in raw_lc and "ikkje" not in raw_lc)
@@ -427,10 +389,7 @@ def parse_reg_xml(xml_bytes):
 
 def find_law_refs_in_regulation(xml_bytes):
     text = xml_bytes.decode("utf-8", errors="ignore")
-    matches = re.findall(
-        r"(?:NL/)?lov/\d{4}-\d{2}-\d{2}(?:-\d+)?",
-        text
-    )
+    matches = re.findall(r"(?:NL/)?lov/\d{4}-\d{2}-\d{2}(?:-\d+)?", text)
     return {m.replace("NL/", "") for m in matches}
 
 
@@ -458,7 +417,6 @@ def get_sheet_id(svc):
         if s["properties"]["title"] == TAB_NAME:
             return s["properties"]["sheetId"]
     raise ValueError(f"Tab '{TAB_NAME}' not found.")
-
 
 def get_last_row(svc):
     """
@@ -497,124 +455,9 @@ def get_last_row(svc):
     return last_used
 
 
-def insert_rows_with_format(svc, sheet_id, start_row_1based, count):
-    if count <= 0:
-        return
-
-    log(f"[insert_rows_with_format] inserting {count} rows at row {start_row_1based}")
-    start_index = start_row_1based - 1
-    end_index = start_index + count
-
-    body = {
-        "requests": [
-            {
-                "insertDimension": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "ROWS",
-                        "startIndex": start_index,
-                        "endIndex": end_index
-                    },
-                    "inheritFromBefore": False
-                }
-            },
-            {
-                "copyPaste": {
-                    "source": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": 1,
-                        "endRowIndex": 2
-                    },
-                    "destination": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_index,
-                        "endRowIndex": end_index
-                    },
-                    "pasteType": "PASTE_FORMAT",
-                    "pasteOrientation": "NORMAL"
-                }
-            }
-        ]
-    }
-
-    svc.spreadsheets().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body=body
-    ).execute()
-
-    log("[insert_rows_with_format] ✅ rows inserted + formatted")
-
-
-def write_block(svc, start_row_1based, rows):
-    """
-    Writes rows.
-    - Writes C/H/S/M.
-    - Writes E ONLY for regulations.
-    - Laws never overwrite E.
-    """
-    n = len(rows)
-    if n == 0:
-        return
-
-    titles = [[r.get("title", "")] for r in rows]
-    dates  = [[r.get("date", "")] for r in rows]
-    urls   = [[r.get("url", "")] for r in rows]
-    mvals  = [["Secondary"] if r.get("type") == "reg" else ["Primary"] for r in rows]
-
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!C{start_row_1based}:C{start_row_1based+n-1}",
-        valueInputOption="RAW",
-        body={"values": titles}
-    ).execute()
-
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!H{start_row_1based}:H{start_row_1based+n-1}",
-        valueInputOption="RAW",
-        body={"values": dates}
-    ).execute()
-
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!S{start_row_1based}:S{start_row_1based+n-1}",
-        valueInputOption="RAW",
-        body={"values": urls}
-    ).execute()
-
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!M{start_row_1based}:M{start_row_1based+n-1}",
-        valueInputOption="RAW",
-        body={"values": mvals}
-    ).execute()
-
-    # E only for regs
-    e_updates = []
-    for i, r in enumerate(rows):
-        if r.get("type") == "reg":
-            row_num = start_row_1based + i
-            e_updates.append({
-                "range": f"{TAB_NAME}!E{row_num}",
-                "values": [["Rule/Regulation (non-EU)"]]
-            })
-
-    if e_updates:
-        svc.spreadsheets().values().batchUpdate(
-            spreadsheetId=SHEET_ID,
-            body={
-                "valueInputOption": "RAW",
-                "data": e_updates
-            }
-        ).execute()
-
-    log(f"[write_block] ✅ wrote {n} rows starting at row {start_row_1based}")
-
-
 def color_rows_orange(svc, sheet_id, row_numbers_1based):
     if not row_numbers_1based:
         return
-
     log(f"[color_rows_orange] coloring {len(row_numbers_1based)} ambiguous rows orange")
 
     requests_body = []
@@ -630,11 +473,7 @@ def color_rows_orange(svc, sheet_id, row_numbers_1based):
                 },
                 "cell": {
                     "userEnteredFormat": {
-                        "backgroundColor": {
-                            "red": 1.0,
-                            "green": 0.85,
-                            "blue": 0.4
-                        }
+                        "backgroundColor": {"red": 1.0, "green": 0.85, "blue": 0.4}
                     }
                 },
                 "fields": "userEnteredFormat.backgroundColor"
@@ -652,7 +491,6 @@ def color_rows_orange(svc, sheet_id, row_numbers_1based):
 def color_rows_black(svc, sheet_id, row_numbers_1based):
     if not row_numbers_1based:
         return
-
     log(f"[color_rows_black] coloring {len(row_numbers_1based)} stale rows black")
 
     requests_body = []
@@ -668,11 +506,7 @@ def color_rows_black(svc, sheet_id, row_numbers_1based):
                 },
                 "cell": {
                     "userEnteredFormat": {
-                        "backgroundColor": {
-                            "red": 0.0,
-                            "green": 0.0,
-                            "blue": 0.0
-                        }
+                        "backgroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}
                     }
                 },
                 "fields": "userEnteredFormat.backgroundColor"
@@ -694,7 +528,6 @@ def read_existing_context(svc):
     Returns:
       last_row: int
       primary_pairs: set((date, url)) for Primary rows only
-      primary_dates: set(date) for Primary rows only
       regs_under_primary: dict{primary_url: set(reg_url)} based on M blocks
       all_url_rows: list of (row_num, url) for blackening
       primary_blocks: list of dicts:
@@ -702,7 +535,7 @@ def read_existing_context(svc):
     """
     last_row = get_last_row(svc)
     if last_row < 3:
-        return last_row, set(), set(), {}, [], []
+        return last_row, set(), {}, [], []
 
     res = svc.spreadsheets().values().batchGet(
         spreadsheetId=SHEET_ID,
@@ -723,10 +556,9 @@ def read_existing_context(svc):
         return ""
 
     primary_pairs = set()
-    primary_dates = set()
     regs_under_primary = {}  # {primary_url: set(reg_url)}
     all_url_rows = []
-    primary_rows = []        # list of {"url": u, "row": row_num}
+    primary_rows = []
 
     current_primary_url = None
 
@@ -746,8 +578,6 @@ def read_existing_context(svc):
             current_primary_url = u or None
             if d and u:
                 primary_pairs.add((d, u))
-            if d:
-                primary_dates.add(d)
 
             if current_primary_url and current_primary_url not in regs_under_primary:
                 regs_under_primary[current_primary_url] = set()
@@ -766,13 +596,157 @@ def read_existing_context(svc):
             end_row = primary_rows[idx + 1]["row"] - 1
         else:
             end_row = last_row
-        primary_blocks.append({
-            "url": p["url"],
-            "row": start_row,
-            "end_row": end_row
+        primary_blocks.append({"url": p["url"], "row": start_row, "end_row": end_row})
+
+    return last_row, primary_pairs, regs_under_primary, all_url_rows, primary_blocks
+
+
+# =========================
+# BATCHED INSERT + BATCHED WRITE (APPLY #1, #2, #3)
+# =========================
+def batch_insert_rows_with_format(svc, sheet_id, insert_ops_existing, append_op):
+    """
+    #2: One spreadsheets.batchUpdate for ALL row inserts + formatting for:
+      - all inserts-under-existing-laws (bottom-up)
+      - then append block at bottom (after inserts have happened)
+    """
+    requests_body = []
+
+    # process existing inserts bottom->top
+    for start_row_1based, count in sorted(insert_ops_existing, key=lambda x: x[0], reverse=True):
+        if count <= 0:
+            continue
+        start_index = start_row_1based - 1
+        end_index = start_index + count
+
+        # insert rows
+        requests_body.append({
+            "insertDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": start_index,
+                    "endIndex": end_index
+                },
+                "inheritFromBefore": False
+            }
+        })
+        # copy template formatting from row 2
+        requests_body.append({
+            "copyPaste": {
+                "source": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1,
+                    "endRowIndex": 2
+                },
+                "destination": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_index,
+                    "endRowIndex": end_index
+                },
+                "pasteType": "PASTE_FORMAT",
+                "pasteOrientation": "NORMAL"
+            }
         })
 
-    return last_row, primary_pairs, primary_dates, regs_under_primary, all_url_rows, primary_blocks
+    # append op must run AFTER existing inserts (so its row index reflects the shifted bottom)
+    if append_op:
+        start_row_1based, count = append_op
+        if count > 0:
+            start_index = start_row_1based - 1
+            end_index = start_index + count
+            requests_body.append({
+                "insertDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": start_index,
+                        "endIndex": end_index
+                    },
+                    "inheritFromBefore": False
+                }
+            })
+            requests_body.append({
+                "copyPaste": {
+                    "source": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 1,
+                        "endRowIndex": 2
+                    },
+                    "destination": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_index,
+                        "endRowIndex": end_index
+                    },
+                    "pasteType": "PASTE_FORMAT",
+                    "pasteOrientation": "NORMAL"
+                }
+            })
+
+    if not requests_body:
+        return
+
+    log(f"[batch_insert_rows_with_format] batchUpdate requests: {len(requests_body)}")
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={"requests": requests_body}
+    ).execute()
+    log("[batch_insert_rows_with_format] ✅ done")
+
+
+def batch_write_segments_values(svc, segments):
+    """
+    #1 + #3:
+      - Use ONE values.batchUpdate for ALL writes (C/H/S/M/E) across ALL segments.
+      - Laws leave E blank; regs set E='Rule/Regulation (non-EU)'.
+    segments: list of (start_row_1based, rows_list)
+    """
+    data = []
+
+    for start_row, rows in segments:
+        n = len(rows)
+        if n <= 0:
+            continue
+        end_row = start_row + n - 1
+
+        titles = [[r.get("title", "")] for r in rows]
+        dates  = [[r.get("date", "")] for r in rows]
+        urls   = [[r.get("url", "")] for r in rows]
+        mvals  = [["Secondary"] if r.get("type") == "reg" else ["Primary"] for r in rows]
+        evals  = [["Rule/Regulation (non-EU)"] if r.get("type") == "reg" else [""] for r in rows]
+
+        data.append({"range": f"{TAB_NAME}!C{start_row}:C{end_row}", "values": titles})
+        data.append({"range": f"{TAB_NAME}!H{start_row}:H{end_row}", "values": dates})
+        data.append({"range": f"{TAB_NAME}!S{start_row}:S{end_row}", "values": urls})
+        data.append({"range": f"{TAB_NAME}!M{start_row}:M{end_row}", "values": mvals})
+        data.append({"range": f"{TAB_NAME}!E{start_row}:E{end_row}", "values": evals})
+
+    if not data:
+        return
+
+    log(f"[batch_write_segments_values] batchUpdate ranges: {len(data)}")
+    svc.spreadsheets().values().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={
+            "valueInputOption": "RAW",
+            "data": data
+        }
+    ).execute()
+    log("[batch_write_segments_values] ✅ done")
+
+
+def shift_row_num_by_inserts(row_num_1based, insert_ops_existing):
+    """
+    Adjust row numbers after inserts-under-existing-laws.
+    Inserts are defined in ORIGINAL coordinates (before inserts), and we apply:
+      new_row = row + sum(count for start_row <= row)
+    Append block does not affect existing rows.
+    """
+    shift = 0
+    for start_row, count in insert_ops_existing:
+        if start_row <= row_num_1based:
+            shift += count
+    return row_num_1based + shift
 
 
 # =========================
@@ -801,7 +775,7 @@ def run_scrape(request=None):
             if not reg_item.get("id"):
                 reg_item["id"] = derive_reg_id_from_filename(rname)
 
-            reg_item["url"]  = build_public_reg_url(reg_item.get("id", ""), filename=rname)
+            reg_item["url"] = build_public_reg_url(reg_item.get("id", ""), filename=rname)
             reg_item["filename"] = rname
 
             law_refs = find_law_refs_in_regulation(rb)
@@ -836,11 +810,7 @@ def run_scrape(request=None):
     kept_laws = [l for l in candidate_laws if l["status"] in ("in_force", "ambiguous")]
     log(f"[handler] kept in-force+ambiguous laws: {len(kept_laws)}")
 
-    kept_laws.sort(
-        key=lambda x: parse_iso_date(x.get("date")) or date.min,
-        reverse=True
-    )
-
+    kept_laws.sort(key=lambda x: parse_iso_date(x.get("date")) or date.min, reverse=True)
     log(f"[handler] total kept laws (no LIMIT applied): {len(kept_laws)}")
 
     # ---- Read sheet context once ----
@@ -848,24 +818,20 @@ def run_scrape(request=None):
     sheet_id = get_sheet_id(svc)
 
     (
-        last_row,
+        initial_last_row,
         primary_pairs,
-        primary_dates,
         regs_under_primary,
         all_url_rows,
         primary_blocks
     ) = read_existing_context(svc)
 
-    # map law_url -> primary block info
-    primary_block_by_url = {
-        b["url"]: b for b in primary_blocks if b["url"]
-    }
+    primary_block_by_url = {b["url"]: b for b in primary_blocks if b["url"]}
 
     # ---- Build rows to append + rows to insert under existing laws ----
     output_rows_to_append = []          # new laws + their regs (appended at bottom)
     regs_to_insert_under_existing = {}  # law_url -> [reg rows to insert inside block]
     ambiguous_positions_new = []
-    scraped_urls = set()                # for blackening
+    scraped_urls = set()
 
     for law in kept_laws:
         law_title = law.get("title", "")
@@ -880,7 +846,6 @@ def run_scrape(request=None):
 
         # -------- PRIMARY (LAW) DUPLICATION RULE --------
         if not law_is_existing:
-            # new primary -> append
             output_rows_to_append.append({
                 "type": "law",
                 "title": law_title,
@@ -891,8 +856,6 @@ def run_scrape(request=None):
             if law_status == "ambiguous":
                 ambiguous_positions_new.append(len(output_rows_to_append) - 1)
 
-            if law_date:
-                primary_dates.add(law_date)
             if law_date and law_url:
                 primary_pairs.add((law_date, law_url))
 
@@ -911,23 +874,17 @@ def run_scrape(request=None):
             if reg_url:
                 scraped_urls.add(reg_url)
 
+            # only dedupe regs within the same primary block
             if reg_url and reg_url in existing_regs_for_this_law_sheet:
                 continue
             if reg_url and reg_url in seen_reg_urls_for_this_law_run:
                 continue
 
-            reg_row = {
-                "type": "reg",
-                "title": reg_title,
-                "date": reg_date,
-                "url": reg_url
-            }
+            reg_row = {"type": "reg", "title": reg_title, "date": reg_date, "url": reg_url}
 
             if law_is_existing:
-                # Insert under existing law's block, not at bottom
                 regs_to_insert_under_existing.setdefault(law_url, []).append(reg_row)
             else:
-                # Law is new; regs follow it in appended block
                 output_rows_to_append.append(reg_row)
 
             if reg_url:
@@ -936,57 +893,72 @@ def run_scrape(request=None):
     log(f"[handler] rows to append at bottom: {len(output_rows_to_append)}")
     log(f"[handler] laws with new regs to insert under existing primaries: {len(regs_to_insert_under_existing)}")
 
-    # ---- Insert new regulations under existing law blocks ----
-    if regs_to_insert_under_existing:
-        # Prepare list of (end_row, law_url, reg_rows) and process from bottom to top
-        blocks_with_regs = []
-        for law_url, reg_rows in regs_to_insert_under_existing.items():
-            block = primary_block_by_url.get(law_url)
-            if not block:
-                log(f"[insert-existing] primary block not found for URL {law_url}, will append regs at bottom instead")
-                output_rows_to_append.extend(reg_rows)
-                continue
-            blocks_with_regs.append((block["end_row"], law_url, reg_rows))
+    # ---- Plan inserts-under-existing (original coordinates) ----
+    insert_ops_existing = []   # list of (start_row_1based, count)
+    segments_to_write = []     # list of (start_row_1based, rows_list)
 
-        # sort by end_row descending so inserts don't affect earlier blocks
-        blocks_with_regs.sort(key=lambda x: x[0], reverse=True)
+    # Collect blocks that have primary block info; if missing, push to append.
+    blocks_with_regs = []
+    for law_url, reg_rows in regs_to_insert_under_existing.items():
+        block = primary_block_by_url.get(law_url)
+        if not block:
+            log(f"[insert-existing] primary block not found for URL {law_url}, will append regs at bottom instead")
+            output_rows_to_append.extend(reg_rows)
+            continue
+        insertion_row = block["end_row"] + 1
+        blocks_with_regs.append((insertion_row, law_url, reg_rows))
 
-        for end_row, law_url, reg_rows in blocks_with_regs:
-            insertion_row = end_row + 1
-            count = len(reg_rows)
-            log(f"[insert-existing] inserting {count} new regs for law {law_url} at row {insertion_row}")
-            insert_rows_with_format(svc, sheet_id, insertion_row, count)
-            write_block(svc, insertion_row, reg_rows)
+    # Sort inserts bottom->top so row indices remain valid
+    blocks_with_regs.sort(key=lambda x: x[0], reverse=True)
 
-            # update regs_under_primary for future runs
-            for r in reg_rows:
-                url = r.get("url")
-                if url:
-                    regs_under_primary.setdefault(law_url, set()).add(url)
+    for insertion_row, law_url, reg_rows in blocks_with_regs:
+        count = len(reg_rows)
+        if count <= 0:
+            continue
+        insert_ops_existing.append((insertion_row, count))
+        segments_to_write.append((insertion_row, reg_rows))
 
-    # ---- Append block for new laws + their regs ----
+        # update in-memory dedupe for regs for subsequent laws in this run
+        for r in reg_rows:
+            u = r.get("url")
+            if u:
+                regs_under_primary.setdefault(law_url, set()).add(u)
+
+    total_inserted_existing = sum(c for _, c in insert_ops_existing)
+
+    # ---- Plan append block (must happen after existing inserts) ----
+    append_start_row = None
+    append_op = None
     if output_rows_to_append:
-        # refresh last_row because we may have inserted rows above
-        last_row = get_last_row(svc)
-        start_row = last_row + 1
-        if start_row < 3:
-            start_row = 3
+        # After inserting regs within existing blocks, the "bottom" moves down by total_inserted_existing
+        append_start_row = (initial_last_row + total_inserted_existing + 1)
+        if append_start_row < 3:
+            append_start_row = 3
+        append_op = (append_start_row, len(output_rows_to_append))
+        segments_to_write.append((append_start_row, output_rows_to_append))
 
-        insert_rows_with_format(svc, sheet_id, start_row, len(output_rows_to_append))
-        write_block(svc, start_row, output_rows_to_append)
+    # ---- Execute: ONE batchUpdate for all inserts (#2) ----
+    batch_insert_rows_with_format(svc, sheet_id, insert_ops_existing, append_op)
 
-        ambiguous_rows = [start_row + idx for idx in ambiguous_positions_new]
+    # ---- Execute: ONE values.batchUpdate for all values across segments (#1/#3) ----
+    batch_write_segments_values(svc, segments_to_write)
+
+    # ---- Color ambiguous (only new laws in the append block) ----
+    ambiguous_rows = []
+    if append_start_row is not None and ambiguous_positions_new:
+        ambiguous_rows = [append_start_row + idx for idx in ambiguous_positions_new]
         color_rows_orange(svc, sheet_id, ambiguous_rows)
-    else:
-        ambiguous_rows = []
 
-    # ---- Black out stale rows (all types) ----
+    # ---- Black out stale rows (all types), adjusting row numbers after inserts-under-existing ----
     stale_rows = []
     for row_num, url_existing in all_url_rows:
         if url_existing and url_existing not in scraped_urls:
-            stale_rows.append(row_num)
+            stale_rows.append(shift_row_num_by_inserts(row_num, insert_ops_existing))
 
     color_rows_black(svc, sheet_id, stale_rows)
+
+    # ---- Return summary ----
+    total_rows_written = sum(len(rows) for _, rows in segments_to_write)
 
     log("=======================================")
     log("DONE")
@@ -995,7 +967,7 @@ def run_scrape(request=None):
     return {
         "status": "appended",
         "laws_kept": len(kept_laws),
-        "rows_written": len(output_rows_to_append),
+        "rows_written": total_rows_written,  # inserted-under-existing + appended
         "ambiguous_colored": len(ambiguous_rows),
         "stale_blackened": len(stale_rows)
     }

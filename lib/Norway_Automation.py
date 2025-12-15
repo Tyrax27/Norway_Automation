@@ -466,16 +466,8 @@ def color_rows_orange(svc, sheet_id, row_numbers_1based):
         end_index = r
         requests_body.append({
             "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_index,
-                    "endRowIndex": end_index
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 1.0, "green": 0.85, "blue": 0.4}
-                    }
-                },
+                "range": {"sheetId": sheet_id, "startRowIndex": start_index, "endRowIndex": end_index},
+                "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1.0, "green": 0.85, "blue": 0.4}}},
                 "fields": "userEnteredFormat.backgroundColor"
             }
         })
@@ -499,16 +491,8 @@ def color_rows_black(svc, sheet_id, row_numbers_1based):
         end_index = r
         requests_body.append({
             "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_index,
-                    "endRowIndex": end_index
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}
-                    }
-                },
+                "range": {"sheetId": sheet_id, "startRowIndex": start_index, "endRowIndex": end_index},
+                "cell": {"userEnteredFormat": {"backgroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}},
                 "fields": "userEnteredFormat.backgroundColor"
             }
         })
@@ -526,23 +510,23 @@ def read_existing_context(svc):
     Reads existing context from row 3 down.
 
     Returns:
-      last_row: int
+      initial_last_row: int
       primary_pairs: set((date, url)) for Primary rows only
       regs_under_primary: dict{primary_url: set(reg_url)} based on M blocks
       all_url_rows: list of (row_num, url) for blackening
       primary_blocks: list of dicts:
           { "url": primary_url, "row": primary_row, "end_row": end_row }
     """
-    last_row = get_last_row(svc)
-    if last_row < 3:
-        return last_row, set(), {}, [], []
+    initial_last_row = get_last_row(svc)
+    if initial_last_row < 3:
+        return initial_last_row, set(), {}, [], []
 
     res = svc.spreadsheets().values().batchGet(
         spreadsheetId=SHEET_ID,
         ranges=[
-            f"{TAB_NAME}!H3:H{last_row}",  # date
-            f"{TAB_NAME}!S3:S{last_row}",  # url
-            f"{TAB_NAME}!M3:M{last_row}",  # Primary/Secondary marker
+            f"{TAB_NAME}!H3:H{initial_last_row}",  # date
+            f"{TAB_NAME}!S3:S{initial_last_row}",  # url
+            f"{TAB_NAME}!M3:M{initial_last_row}",  # Primary/Secondary marker
         ]
     ).execute()
 
@@ -556,7 +540,7 @@ def read_existing_context(svc):
         return ""
 
     primary_pairs = set()
-    regs_under_primary = {}  # {primary_url: set(reg_url)}
+    regs_under_primary = {}
     all_url_rows = []
     primary_rows = []
 
@@ -578,106 +562,74 @@ def read_existing_context(svc):
             current_primary_url = u or None
             if d and u:
                 primary_pairs.add((d, u))
-
-            if current_primary_url and current_primary_url not in regs_under_primary:
-                regs_under_primary[current_primary_url] = set()
-
+            regs_under_primary.setdefault(current_primary_url, set())
             primary_rows.append({"url": current_primary_url, "row": row_num})
-
         else:
             if current_primary_url and u:
                 regs_under_primary.setdefault(current_primary_url, set()).add(u)
 
-    # compute end_row for each primary block
     primary_blocks = []
     for idx, p in enumerate(primary_rows):
         start_row = p["row"]
         if idx + 1 < len(primary_rows):
             end_row = primary_rows[idx + 1]["row"] - 1
         else:
-            end_row = last_row
+            end_row = initial_last_row
         primary_blocks.append({"url": p["url"], "row": start_row, "end_row": end_row})
 
-    return last_row, primary_pairs, regs_under_primary, all_url_rows, primary_blocks
+    return initial_last_row, primary_pairs, regs_under_primary, all_url_rows, primary_blocks
 
 
 # =========================
-# BATCHED INSERT + BATCHED WRITE (APPLY #1, #2, #3)
+# BATCHED INSERT + BATCHED WRITE (#1, #2, #3)
 # =========================
 def batch_insert_rows_with_format(svc, sheet_id, insert_ops_existing, append_op):
     """
-    #2: One spreadsheets.batchUpdate for ALL row inserts + formatting for:
+    #2: One spreadsheets.batchUpdate for ALL row inserts + formatting:
       - all inserts-under-existing-laws (bottom-up)
-      - then append block at bottom (after inserts have happened)
+      - then append block at bottom
     """
     requests_body = []
 
-    # process existing inserts bottom->top
+    # existing inserts bottom->top
     for start_row_1based, count in sorted(insert_ops_existing, key=lambda x: x[0], reverse=True):
         if count <= 0:
             continue
         start_index = start_row_1based - 1
         end_index = start_index + count
 
-        # insert rows
         requests_body.append({
             "insertDimension": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "dimension": "ROWS",
-                    "startIndex": start_index,
-                    "endIndex": end_index
-                },
+                "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": start_index, "endIndex": end_index},
                 "inheritFromBefore": False
             }
         })
-        # copy template formatting from row 2
         requests_body.append({
             "copyPaste": {
-                "source": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 1,
-                    "endRowIndex": 2
-                },
-                "destination": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_index,
-                    "endRowIndex": end_index
-                },
+                "source": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2},
+                "destination": {"sheetId": sheet_id, "startRowIndex": start_index, "endRowIndex": end_index},
                 "pasteType": "PASTE_FORMAT",
                 "pasteOrientation": "NORMAL"
             }
         })
 
-    # append op must run AFTER existing inserts (so its row index reflects the shifted bottom)
+    # append insert last
     if append_op:
         start_row_1based, count = append_op
         if count > 0:
             start_index = start_row_1based - 1
             end_index = start_index + count
+
             requests_body.append({
                 "insertDimension": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "ROWS",
-                        "startIndex": start_index,
-                        "endIndex": end_index
-                    },
+                    "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": start_index, "endIndex": end_index},
                     "inheritFromBefore": False
                 }
             })
             requests_body.append({
                 "copyPaste": {
-                    "source": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": 1,
-                        "endRowIndex": 2
-                    },
-                    "destination": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_index,
-                        "endRowIndex": end_index
-                    },
+                    "source": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2},
+                    "destination": {"sheetId": sheet_id, "startRowIndex": start_index, "endRowIndex": end_index},
                     "pasteType": "PASTE_FORMAT",
                     "pasteOrientation": "NORMAL"
                 }
@@ -694,19 +646,48 @@ def batch_insert_rows_with_format(svc, sheet_id, insert_ops_existing, append_op)
     log("[batch_insert_rows_with_format] ✅ done")
 
 
-def batch_write_segments_values(svc, segments):
+def shift_new_segment_start_after_inserts(segment_start_row_1based, insert_ops_existing):
+    """
+    IMPORTANT (fix for blank inserted rows):
+    For a *newly inserted segment* planned at start_row, its FINAL start row is shifted only by
+    inserts that happen ABOVE it (strictly smaller start_row), NOT by itself.
+
+    final_start = start + sum(count for (ins_start, count) where ins_start < start)
+    """
+    shift = 0
+    for ins_start, count in insert_ops_existing:
+        if ins_start < segment_start_row_1based:
+            shift += count
+    return segment_start_row_1based + shift
+
+
+def shift_existing_row_after_inserts(row_num_1based, insert_ops_existing):
+    """
+    For an *existing row* already in the sheet before inserts, if we insert at its row index,
+    it gets pushed down. So we use <=.
+
+    new_row = row + sum(count for (ins_start, count) where ins_start <= row)
+    """
+    shift = 0
+    for ins_start, count in insert_ops_existing:
+        if ins_start <= row_num_1based:
+            shift += count
+    return row_num_1based + shift
+
+
+def batch_write_segments_values(svc, segments_existing, segments_append, insert_ops_existing):
     """
     #1 + #3:
-      - Use ONE values.batchUpdate for ALL writes (C/H/S/M/E) across ALL segments.
-      - Laws leave E blank; regs set E='Rule/Regulation (non-EU)'.
-    segments: list of (start_row_1based, rows_list)
+      - ONE values.batchUpdate for ALL writes (C/H/S/M/E)
+      - segments_existing start rows are shifted using insert_ops_existing (< rule).
+      - segments_append start rows are already FINAL coordinates.
     """
     data = []
 
-    for start_row, rows in segments:
+    def add_segment(start_row, rows):
         n = len(rows)
         if n <= 0:
-            continue
+            return
         end_row = start_row + n - 1
 
         titles = [[r.get("title", "")] for r in rows]
@@ -721,32 +702,24 @@ def batch_write_segments_values(svc, segments):
         data.append({"range": f"{TAB_NAME}!M{start_row}:M{end_row}", "values": mvals})
         data.append({"range": f"{TAB_NAME}!E{start_row}:E{end_row}", "values": evals})
 
+    # existing-law insert segments: shift starts properly
+    for orig_start, rows in segments_existing:
+        final_start = shift_new_segment_start_after_inserts(orig_start, insert_ops_existing)
+        add_segment(final_start, rows)
+
+    # append segment(s): already final
+    for final_start, rows in segments_append:
+        add_segment(final_start, rows)
+
     if not data:
         return
 
     log(f"[batch_write_segments_values] batchUpdate ranges: {len(data)}")
     svc.spreadsheets().values().batchUpdate(
         spreadsheetId=SHEET_ID,
-        body={
-            "valueInputOption": "RAW",
-            "data": data
-        }
+        body={"valueInputOption": "RAW", "data": data}
     ).execute()
     log("[batch_write_segments_values] ✅ done")
-
-
-def shift_row_num_by_inserts(row_num_1based, insert_ops_existing):
-    """
-    Adjust row numbers after inserts-under-existing-laws.
-    Inserts are defined in ORIGINAL coordinates (before inserts), and we apply:
-      new_row = row + sum(count for start_row <= row)
-    Append block does not affect existing rows.
-    """
-    shift = 0
-    for start_row, count in insert_ops_existing:
-        if start_row <= row_num_1based:
-            shift += count
-    return row_num_1based + shift
 
 
 # =========================
@@ -768,7 +741,6 @@ def run_scrape(request=None):
     for rname, rb in regs_files.items():
         try:
             reg_item = parse_reg_xml(rb)
-
             reg_date = reg_item.get("datePromulgated") or derive_reg_date_from_filename(rname)
             reg_item["date"] = reg_date
 
@@ -790,7 +762,6 @@ def run_scrape(request=None):
     for lname, lb in laws_files.items():
         try:
             law = parse_law_xml(lb)
-
             date_iso, _ = derive_date_and_suffix_from_filename(lname, "nl")
             law["date"] = law.get("datePromulgated") or date_iso
 
@@ -799,7 +770,6 @@ def run_scrape(request=None):
 
             law["url"] = build_public_law_url(law.get("id", ""), filename=lname)
             law["filename"] = lname
-
             candidate_laws.append(law)
 
         except Exception as e:
@@ -828,8 +798,8 @@ def run_scrape(request=None):
     primary_block_by_url = {b["url"]: b for b in primary_blocks if b["url"]}
 
     # ---- Build rows to append + rows to insert under existing laws ----
-    output_rows_to_append = []          # new laws + their regs (appended at bottom)
-    regs_to_insert_under_existing = {}  # law_url -> [reg rows to insert inside block]
+    output_rows_to_append = []
+    regs_to_insert_under_existing = {}
     ambiguous_positions_new = []
     scraped_urls = set()
 
@@ -844,7 +814,7 @@ def run_scrape(request=None):
 
         law_is_existing = bool(law_date and law_url and (law_date, law_url) in primary_pairs)
 
-        # -------- PRIMARY (LAW) DUPLICATION RULE --------
+        # PRIMARY dedupe basis: (H=date, S=url)
         if not law_is_existing:
             output_rows_to_append.append({
                 "type": "law",
@@ -859,7 +829,7 @@ def run_scrape(request=None):
             if law_date and law_url:
                 primary_pairs.add((law_date, law_url))
 
-        # -------- SECONDARY (REG) DUPLICATION RULE --------
+        # SECONDARY dedupe: only within same primary block (until next primary)
         law_id_key = (law.get("id") or "").replace("NL/", "")
         regs_for_law = reg_map.get(law_id_key, [])
 
@@ -874,7 +844,6 @@ def run_scrape(request=None):
             if reg_url:
                 scraped_urls.add(reg_url)
 
-            # only dedupe regs within the same primary block
             if reg_url and reg_url in existing_regs_for_this_law_sheet:
                 continue
             if reg_url and reg_url in seen_reg_urls_for_this_law_run:
@@ -893,11 +862,10 @@ def run_scrape(request=None):
     log(f"[handler] rows to append at bottom: {len(output_rows_to_append)}")
     log(f"[handler] laws with new regs to insert under existing primaries: {len(regs_to_insert_under_existing)}")
 
-    # ---- Plan inserts-under-existing (original coordinates) ----
-    insert_ops_existing = []   # list of (start_row_1based, count)
-    segments_to_write = []     # list of (start_row_1based, rows_list)
+    # ---- Plan existing inserts ----
+    insert_ops_existing = []     # (orig_start_row, count)
+    segments_existing = []       # (orig_start_row, rows_list)
 
-    # Collect blocks that have primary block info; if missing, push to append.
     blocks_with_regs = []
     for law_url, reg_rows in regs_to_insert_under_existing.items():
         block = primary_block_by_url.get(law_url)
@@ -908,7 +876,7 @@ def run_scrape(request=None):
         insertion_row = block["end_row"] + 1
         blocks_with_regs.append((insertion_row, law_url, reg_rows))
 
-    # Sort inserts bottom->top so row indices remain valid
+    # IMPORTANT: we still insert bottom->top
     blocks_with_regs.sort(key=lambda x: x[0], reverse=True)
 
     for insertion_row, law_url, reg_rows in blocks_with_regs:
@@ -916,9 +884,8 @@ def run_scrape(request=None):
         if count <= 0:
             continue
         insert_ops_existing.append((insertion_row, count))
-        segments_to_write.append((insertion_row, reg_rows))
+        segments_existing.append((insertion_row, reg_rows))
 
-        # update in-memory dedupe for regs for subsequent laws in this run
         for r in reg_rows:
             u = r.get("url")
             if u:
@@ -926,39 +893,39 @@ def run_scrape(request=None):
 
     total_inserted_existing = sum(c for _, c in insert_ops_existing)
 
-    # ---- Plan append block (must happen after existing inserts) ----
+    # ---- Plan append (final coordinates) ----
+    segments_append = []
     append_start_row = None
     append_op = None
+
     if output_rows_to_append:
-        # After inserting regs within existing blocks, the "bottom" moves down by total_inserted_existing
-        append_start_row = (initial_last_row + total_inserted_existing + 1)
+        append_start_row = initial_last_row + total_inserted_existing + 1
         if append_start_row < 3:
             append_start_row = 3
         append_op = (append_start_row, len(output_rows_to_append))
-        segments_to_write.append((append_start_row, output_rows_to_append))
+        segments_append.append((append_start_row, output_rows_to_append))
 
-    # ---- Execute: ONE batchUpdate for all inserts (#2) ----
+    # ---- Execute inserts in ONE call (#2) ----
     batch_insert_rows_with_format(svc, sheet_id, insert_ops_existing, append_op)
 
-    # ---- Execute: ONE values.batchUpdate for all values across segments (#1/#3) ----
-    batch_write_segments_values(svc, segments_to_write)
+    # ---- Execute ALL value writes in ONE call (#1 + #3) ----
+    # FIXED: existing segments are shifted before writing so we don't create blank inserted rows
+    batch_write_segments_values(svc, segments_existing, segments_append, insert_ops_existing)
 
-    # ---- Color ambiguous (only new laws in the append block) ----
+    # ---- Color ambiguous (only new laws in append block) ----
     ambiguous_rows = []
     if append_start_row is not None and ambiguous_positions_new:
         ambiguous_rows = [append_start_row + idx for idx in ambiguous_positions_new]
         color_rows_orange(svc, sheet_id, ambiguous_rows)
 
-    # ---- Black out stale rows (all types), adjusting row numbers after inserts-under-existing ----
+    # ---- Black out stale existing rows (shift existing rows by <= rule) ----
     stale_rows = []
     for row_num, url_existing in all_url_rows:
         if url_existing and url_existing not in scraped_urls:
-            stale_rows.append(shift_row_num_by_inserts(row_num, insert_ops_existing))
-
+            stale_rows.append(shift_existing_row_after_inserts(row_num, insert_ops_existing))
     color_rows_black(svc, sheet_id, stale_rows)
 
-    # ---- Return summary ----
-    total_rows_written = sum(len(rows) for _, rows in segments_to_write)
+    total_rows_written = sum(len(rows) for _, rows in segments_existing) + sum(len(rows) for _, rows in segments_append)
 
     log("=======================================")
     log("DONE")
@@ -967,10 +934,11 @@ def run_scrape(request=None):
     return {
         "status": "appended",
         "laws_kept": len(kept_laws),
-        "rows_written": total_rows_written,  # inserted-under-existing + appended
+        "rows_written": total_rows_written,
         "ambiguous_colored": len(ambiguous_rows),
         "stale_blackened": len(stale_rows)
     }
+
 
 # Alias for compatibility
 handler = run_scrape

@@ -1,4 +1,4 @@
-import os, io, json, tarfile, re
+import os, io, json, tarfile, re, time
 import requests
 from lxml import etree
 from datetime import datetime, date
@@ -17,12 +17,19 @@ REGS_PKG = "gjeldende-sentrale-forskrifter.tar.bz2"
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 TAB_NAME = "Norway Trial"
 
+# Simple write-rate throttle:
+# After 50 write calls to Sheets, sleep 30 seconds, then reset the counter.
+WRITE_LIMIT_PER_WINDOW = 50
+WRITE_SLEEP_SECONDS = 30
+_write_calls = 0
+
 
 # =========================
 # UTILS
 # =========================
 def log(msg=""):
     print(msg, flush=True)
+
 
 def first_text_any(root, names):
     for n in names:
@@ -32,6 +39,7 @@ def first_text_any(root, names):
                 if el is not None and el.text and el.text.strip():
                     return el.text.strip()
     return ""
+
 
 def all_text_any(root, names):
     out = []
@@ -43,6 +51,7 @@ def all_text_any(root, names):
                     out.append(el.text.strip())
     return out
 
+
 def parse_iso_date(d):
     if not d:
         return None
@@ -51,12 +60,14 @@ def parse_iso_date(d):
     except Exception:
         return None
 
+
 def any_future_date(dates_list):
     for d in dates_list:
         dd = parse_iso_date(d)
         if dd and dd > date.today():
             return True
     return False
+
 
 def any_past_or_today_date(dates_list):
     for d in dates_list:
@@ -81,9 +92,11 @@ MONTH_MAP = {
     "desember": "12",
 }
 
+
 def find_effective_dates_in_text(text_full):
     found = []
 
+    # Single ISO date
     for m in re.finditer(
         r"I\s*kraft\s*(?:fra|frå)\s*(\d{4}-\d{2}-\d{2})",
         text_full,
@@ -91,6 +104,7 @@ def find_effective_dates_in_text(text_full):
     ):
         found.append(m.group(1))
 
+    # Comma-separated ISO dates
     for m in re.finditer(
         r"I\s*kraft\s*(?:fra|frå)\s*((?:\d{4}-\d{2}-\d{2})(?:\s*,\s*\d{4}-\d{2}-\d{2})+)",
         text_full,
@@ -100,6 +114,7 @@ def find_effective_dates_in_text(text_full):
         for iso in re.findall(r"\d{4}-\d{2}-\d{2}", chunk):
             found.append(iso)
 
+    # "Fra 1. januar 2024" style
     for m in re.finditer(
         r"Fra\s+(\d{1,2})\.\s*([A-Za-zæøåÆØÅ]+)\s+(\d{4})",
         text_full,
@@ -146,6 +161,7 @@ def download_pkg(filename):
     r.raise_for_status()
     log(f"[download_pkg] downloaded {len(r.content)} bytes for {filename}")
     return r.content
+
 
 def extract_tar_bz2(blob, label):
     log(f"[extract_tar_bz2] extracting {label} ...")
@@ -285,7 +301,7 @@ def parse_law_xml(xml_bytes):
     text_full = etree.tostring(root, encoding="unicode", method="text")
     text_lc = (text_full or "").lower()
 
-    # --- collect effective date candidates from tags ---
+    # Effective date candidates from tags
     positive_tag_candidates = all_text_any(
         root,
         [
@@ -299,7 +315,7 @@ def parse_law_xml(xml_bytes):
         ]
     )
 
-    # --- collect effective date candidates from free text ---
+    # Effective date candidates from text
     positive_text_candidates = find_effective_dates_in_text(text_full)
 
     positive_candidates = positive_tag_candidates + positive_text_candidates
@@ -307,7 +323,7 @@ def parse_law_xml(xml_bytes):
         dict.fromkeys([c.strip() for c in positive_candidates if c and c.strip()])
     )
 
-    # effectiveCandidates = positive candidates plus last-amended in-force dates
+    # Effective candidates (including lastAmendedInForceFrom)
     effective_candidates = positive_candidates[:]
     effective_candidates.extend(
         all_text_any(
@@ -325,7 +341,6 @@ def parse_law_xml(xml_bytes):
         or (in_force_raw or "").lower().strip() in ("false", "0", "no", "nei")
     )
 
-    # NEW: compute these once
     has_past_or_today = any_past_or_today_date(positive_candidates)
     has_future = any_future_date(positive_candidates)
 
@@ -333,7 +348,7 @@ def parse_law_xml(xml_bytes):
         status = "not_in_force"
         reason = "explicit ikke/ikkje i kraft and no past/today positive entry-into-force date"
 
-    # If there is at least one past/today effective date, we treat the law as in force,
+    # If there is at least one past/today effective date, law is in force,
     # even if there are also future dates (those are future amendments).
     elif has_past_or_today:
         status = "in_force"
@@ -352,9 +367,7 @@ def parse_law_xml(xml_bytes):
     else:
         raw_lc = (in_force_raw or "").lower().strip()
 
-        raw_has_not_in_force = (
-            "ikke i kraft" in raw_lc or "ikkje i kraft" in raw_lc
-        )
+        raw_has_not_in_force = ("ikke i kraft" in raw_lc or "ikkje i kraft" in raw_lc)
         raw_has_in_force = (
             raw_lc in ("true", "1", "yes", "ja")
             or ("i kraft" in raw_lc and "ikke" not in raw_lc and "ikkje" not in raw_lc)
@@ -402,6 +415,7 @@ def normalize_reg_datokode(datokode: str) -> str:
     m = re.search(r"(\d{4}-\d{2}-\d{2})", datokode)
     return m.group(1) if m else ""
 
+
 def parse_reg_xml(xml_bytes):
     root = etree.fromstring(xml_bytes)
 
@@ -424,6 +438,7 @@ def parse_reg_xml(xml_bytes):
         "refID": ref_id,
         "id": chosen_id
     }
+
 
 def find_law_refs_in_regulation(xml_bytes):
     text = xml_bytes.decode("utf-8", errors="ignore")
@@ -451,6 +466,30 @@ def sheets_service():
         scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
     return build("sheets", "v4", credentials=creds)
+
+
+def rate_limited_execute(req, label: str = ""):
+    """
+    Execute a Sheets API request with a simple throttle:
+    - Count write calls.
+    - If we've done WRITE_LIMIT_PER_WINDOW writes, sleep WRITE_SLEEP_SECONDS,
+      reset the counter, and continue.
+    """
+    global _write_calls
+
+    if _write_calls >= WRITE_LIMIT_PER_WINDOW:
+        log(
+            f"[rate_limit] hit {WRITE_LIMIT_PER_WINDOW} writes; "
+            f"sleeping {WRITE_SLEEP_SECONDS}s before {label}"
+        )
+        time.sleep(WRITE_SLEEP_SECONDS)
+        _write_calls = 0
+
+    _write_calls += 1
+    log(f"[rate_limit] write #{_write_calls} ({label})")
+
+    return req.execute()
+
 
 def get_sheet_id(svc):
     ss = svc.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
@@ -537,10 +576,13 @@ def insert_rows_with_format(svc, sheet_id, start_row_1based, count):
         ]
     }
 
-    svc.spreadsheets().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body=body
-    ).execute()
+    rate_limited_execute(
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body=body
+        ),
+        label="insert_rows_with_format"
+    )
 
     log("[insert_rows_with_format] ✅ rows inserted + formatted")
 
@@ -561,33 +603,49 @@ def write_block(svc, start_row_1based, rows):
     urls   = [[r.get("url", "")] for r in rows]
     mvals  = [["Secondary"] if r.get("type") == "reg" else ["Primary"] for r in rows]
 
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!C{start_row_1based}:C{start_row_1based+n-1}",
-        valueInputOption="RAW",
-        body={"values": titles}
-    ).execute()
+    # C (titles)
+    rate_limited_execute(
+        svc.spreadsheets().values().update(
+            spreadsheetId=SHEET_ID,
+            range=f"{TAB_NAME}!C{start_row_1based}:C{start_row_1based+n-1}",
+            valueInputOption="RAW",
+            body={"values": titles}
+        ),
+        label="write_block:C"
+    )
 
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!H{start_row_1based}:H{start_row_1based+n-1}",
-        valueInputOption="RAW",
-        body={"values": dates}
-    ).execute()
+    # H (dates)
+    rate_limited_execute(
+        svc.spreadsheets().values().update(
+            spreadsheetId=SHEET_ID,
+            range=f"{TAB_NAME}!H{start_row_1based}:H{start_row_1based+n-1}",
+            valueInputOption="RAW",
+            body={"values": dates}
+        ),
+        label="write_block:H"
+    )
 
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!S{start_row_1based}:S{start_row_1based+n-1}",
-        valueInputOption="RAW",
-        body={"values": urls}
-    ).execute()
+    # S (urls)
+    rate_limited_execute(
+        svc.spreadsheets().values().update(
+            spreadsheetId=SHEET_ID,
+            range=f"{TAB_NAME}!S{start_row_1based}:S{start_row_1based+n-1}",
+            valueInputOption="RAW",
+            body={"values": urls}
+        ),
+        label="write_block:S"
+    )
 
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!M{start_row_1based}:M{start_row_1based+n-1}",
-        valueInputOption="RAW",
-        body={"values": mvals}
-    ).execute()
+    # M (Primary/Secondary)
+    rate_limited_execute(
+        svc.spreadsheets().values().update(
+            spreadsheetId=SHEET_ID,
+            range=f"{TAB_NAME}!M{start_row_1based}:M{start_row_1based+n-1}",
+            valueInputOption="RAW",
+            body={"values": mvals}
+        ),
+        label="write_block:M"
+    )
 
     # E only for regs
     e_updates = []
@@ -600,13 +658,16 @@ def write_block(svc, start_row_1based, rows):
             })
 
     if e_updates:
-        svc.spreadsheets().values().batchUpdate(
-            spreadsheetId=SHEET_ID,
-            body={
-                "valueInputOption": "RAW",
-                "data": e_updates
-            }
-        ).execute()
+        rate_limited_execute(
+            svc.spreadsheets().values().batchUpdate(
+                spreadsheetId=SHEET_ID,
+                body={
+                    "valueInputOption": "RAW",
+                    "data": e_updates
+                }
+            ),
+            label="write_block:E"
+        )
 
     log(f"[write_block] ✅ wrote {n} rows starting at row {start_row_1based}")
 
@@ -641,10 +702,13 @@ def color_rows_orange(svc, sheet_id, row_numbers_1based):
             }
         })
 
-    svc.spreadsheets().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body={"requests": requests_body}
-    ).execute()
+    rate_limited_execute(
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"requests": requests_body}
+        ),
+        label="color_rows_orange"
+    )
 
     log("[color_rows_orange] ✅ done")
 
@@ -679,10 +743,13 @@ def color_rows_black(svc, sheet_id, row_numbers_1based):
             }
         })
 
-    svc.spreadsheets().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body={"requests": requests_body}
-    ).execute()
+    rate_limited_execute(
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"requests": requests_body}
+        ),
+        label="color_rows_black"
+    )
 
     log("[color_rows_black] ✅ done")
 
@@ -801,7 +868,7 @@ def run_scrape(request=None):
             if not reg_item.get("id"):
                 reg_item["id"] = derive_reg_id_from_filename(rname)
 
-            reg_item["url"]  = build_public_reg_url(reg_item.get("id", ""), filename=rname)
+            reg_item["url"] = build_public_reg_url(reg_item.get("id", ""), filename=rname)
             reg_item["filename"] = rname
 
             law_refs = find_law_refs_in_regulation(rb)
@@ -834,14 +901,12 @@ def run_scrape(request=None):
     log(f"[handler] total laws parsed: {len(candidate_laws)}")
 
     kept_laws = [l for l in candidate_laws if l["status"] in ("in_force", "ambiguous")]
-    log(f"[handler] kept in-force+ambiguous laws: {len(kept_laws)}")
+    log(f"[handler] kept in-force+ambiguous laws (no LIMIT): {len(kept_laws)}")
 
     kept_laws.sort(
         key=lambda x: parse_iso_date(x.get("date")) or date.min,
         reverse=True
     )
-
-    log(f"[handler] total kept laws (no LIMIT applied): {len(kept_laws)}")
 
     # ---- Read sheet context once ----
     svc = sheets_service()
@@ -876,11 +941,12 @@ def run_scrape(request=None):
         if law_url:
             scraped_urls.add(law_url)
 
-        law_is_existing = bool(law_date and law_url and (law_date, law_url) in primary_pairs)
+        # PRIMARY dedupe: law already exists if date+url already present as Primary
+        law_is_existing = bool(
+            law_date and law_url and (law_date, law_url) in primary_pairs
+        )
 
-        # -------- PRIMARY (LAW) DUPLICATION RULE --------
         if not law_is_existing:
-            # new primary -> append
             output_rows_to_append.append({
                 "type": "law",
                 "title": law_title,
@@ -896,7 +962,7 @@ def run_scrape(request=None):
             if law_date and law_url:
                 primary_pairs.add((law_date, law_url))
 
-        # -------- SECONDARY (REG) DUPLICATION RULE --------
+        # SECONDARY dedupe (regs under law)
         law_id_key = (law.get("id") or "").replace("NL/", "")
         regs_for_law = reg_map.get(law_id_key, [])
 
@@ -924,10 +990,8 @@ def run_scrape(request=None):
             }
 
             if law_is_existing:
-                # Insert under existing law's block, not at bottom
                 regs_to_insert_under_existing.setdefault(law_url, []).append(reg_row)
             else:
-                # Law is new; regs follow it in appended block
                 output_rows_to_append.append(reg_row)
 
             if reg_url:
@@ -938,7 +1002,6 @@ def run_scrape(request=None):
 
     # ---- Insert new regulations under existing law blocks ----
     if regs_to_insert_under_existing:
-        # Prepare list of (end_row, law_url, reg_rows) and process from bottom to top
         blocks_with_regs = []
         for law_url, reg_rows in regs_to_insert_under_existing.items():
             block = primary_block_by_url.get(law_url)
@@ -948,7 +1011,7 @@ def run_scrape(request=None):
                 continue
             blocks_with_regs.append((block["end_row"], law_url, reg_rows))
 
-        # sort by end_row descending so inserts don't affect earlier blocks
+        # Process from bottom to top to avoid messing with row indices
         blocks_with_regs.sort(key=lambda x: x[0], reverse=True)
 
         for end_row, law_url, reg_rows in blocks_with_regs:
@@ -958,7 +1021,6 @@ def run_scrape(request=None):
             insert_rows_with_format(svc, sheet_id, insertion_row, count)
             write_block(svc, insertion_row, reg_rows)
 
-            # update regs_under_primary for future runs
             for r in reg_rows:
                 url = r.get("url")
                 if url:
@@ -966,7 +1028,6 @@ def run_scrape(request=None):
 
     # ---- Append block for new laws + their regs ----
     if output_rows_to_append:
-        # refresh last_row because we may have inserted rows above
         last_row = get_last_row(svc)
         start_row = last_row + 1
         if start_row < 3:
@@ -999,6 +1060,7 @@ def run_scrape(request=None):
         "ambiguous_colored": len(ambiguous_rows),
         "stale_blackened": len(stale_rows)
     }
+
 
 # Alias for compatibility
 handler = run_scrape

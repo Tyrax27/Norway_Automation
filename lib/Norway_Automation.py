@@ -17,12 +17,23 @@ REGS_PKG = "gjeldende-sentrale-forskrifter.tar.bz2"
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 TAB_NAME = "Norway"
 
+# Ignore URLs that start with this prefix (do not insert, dedupe against, or blacken)
+IGNORE_URL_PREFIXES = (
+    "https://www.forbrukertilsynet.no",
+)
+
 
 # =========================
 # UTILS
 # =========================
 def log(msg=""):
     print(msg, flush=True)
+
+def should_ignore_url(url: str) -> bool:
+    u = (url or "").strip()
+    if not u:
+        return False
+    return any(u.startswith(p) for p in IGNORE_URL_PREFIXES)
 
 def first_text_any(root, names):
     for n in names:
@@ -553,6 +564,10 @@ def read_existing_context(svc):
         u = v_at(s_vals, i)
         m = v_at(m_vals, i).lower()
 
+        # IGNORE: do not consider these URLs for blackening/dedupe context
+        if u and should_ignore_url(u):
+            continue
+
         if u:
             all_url_rows.append((row_num, u))
 
@@ -647,13 +662,6 @@ def batch_insert_rows_with_format(svc, sheet_id, insert_ops_existing, append_op)
 
 
 def shift_new_segment_start_after_inserts(segment_start_row_1based, insert_ops_existing):
-    """
-    IMPORTANT (fix for blank inserted rows):
-    For a *newly inserted segment* planned at start_row, its FINAL start row is shifted only by
-    inserts that happen ABOVE it (strictly smaller start_row), NOT by itself.
-
-    final_start = start + sum(count for (ins_start, count) where ins_start < start)
-    """
     shift = 0
     for ins_start, count in insert_ops_existing:
         if ins_start < segment_start_row_1based:
@@ -662,12 +670,6 @@ def shift_new_segment_start_after_inserts(segment_start_row_1based, insert_ops_e
 
 
 def shift_existing_row_after_inserts(row_num_1based, insert_ops_existing):
-    """
-    For an *existing row* already in the sheet before inserts, if we insert at its row index,
-    it gets pushed down. So we use <=.
-
-    new_row = row + sum(count for (ins_start, count) where ins_start <= row)
-    """
     shift = 0
     for ins_start, count in insert_ops_existing:
         if ins_start <= row_num_1based:
@@ -676,12 +678,6 @@ def shift_existing_row_after_inserts(row_num_1based, insert_ops_existing):
 
 
 def batch_write_segments_values(svc, segments_existing, segments_append, insert_ops_existing):
-    """
-    #1 + #3:
-      - ONE values.batchUpdate for ALL writes (C/H/S/M/E)
-      - segments_existing start rows are shifted using insert_ops_existing (< rule).
-      - segments_append start rows are already FINAL coordinates.
-    """
     data = []
 
     def add_segment(start_row, rows):
@@ -702,12 +698,10 @@ def batch_write_segments_values(svc, segments_existing, segments_append, insert_
         data.append({"range": f"{TAB_NAME}!M{start_row}:M{end_row}", "values": mvals})
         data.append({"range": f"{TAB_NAME}!E{start_row}:E{end_row}", "values": evals})
 
-    # existing-law insert segments: shift starts properly
     for orig_start, rows in segments_existing:
         final_start = shift_new_segment_start_after_inserts(orig_start, insert_ops_existing)
         add_segment(final_start, rows)
 
-    # append segment(s): already final
     for final_start, rows in segments_append:
         add_segment(final_start, rows)
 
@@ -736,7 +730,6 @@ def run_scrape(request=None):
     laws_files = extract_tar_bz2(laws_blob, "laws")
     regs_files = extract_tar_bz2(regs_blob, "regulations")
 
-    # ---- Build regulation map keyed by law id ----
     reg_map = {}
     for rname, rb in regs_files.items():
         try:
@@ -750,6 +743,10 @@ def run_scrape(request=None):
             reg_item["url"] = build_public_reg_url(reg_item.get("id", ""), filename=rname)
             reg_item["filename"] = rname
 
+            # Ignore regs that point to this domain entirely
+            if should_ignore_url(reg_item.get("url", "")):
+                continue
+
             law_refs = find_law_refs_in_regulation(rb)
             for law_id in law_refs:
                 reg_map.setdefault(law_id, []).append(reg_item)
@@ -757,7 +754,6 @@ def run_scrape(request=None):
         except Exception as e:
             log(f"[reg parse fail] {rname}: {e}")
 
-    # ---- Parse laws ----
     candidate_laws = []
     for lname, lb in laws_files.items():
         try:
@@ -770,6 +766,11 @@ def run_scrape(request=None):
 
             law["url"] = build_public_law_url(law.get("id", ""), filename=lname)
             law["filename"] = lname
+
+            # Ignore laws that point to this domain entirely
+            if should_ignore_url(law.get("url", "")):
+                continue
+
             candidate_laws.append(law)
 
         except Exception as e:
@@ -783,7 +784,6 @@ def run_scrape(request=None):
     kept_laws.sort(key=lambda x: parse_iso_date(x.get("date")) or date.min, reverse=True)
     log(f"[handler] total kept laws (no LIMIT applied): {len(kept_laws)}")
 
-    # ---- Read sheet context once ----
     svc = sheets_service()
     sheet_id = get_sheet_id(svc)
 
@@ -797,7 +797,6 @@ def run_scrape(request=None):
 
     primary_block_by_url = {b["url"]: b for b in primary_blocks if b["url"]}
 
-    # ---- Build rows to append + rows to insert under existing laws ----
     output_rows_to_append = []
     regs_to_insert_under_existing = {}
     ambiguous_positions_new = []
@@ -809,12 +808,15 @@ def run_scrape(request=None):
         law_url   = (law.get("url") or "").strip()
         law_status = law.get("status")
 
+        # Ignore domain entirely: no scraped_urls, no dedupe, no inserts
+        if should_ignore_url(law_url):
+            continue
+
         if law_url:
             scraped_urls.add(law_url)
 
         law_is_existing = bool(law_date and law_url and (law_date, law_url) in primary_pairs)
 
-        # PRIMARY dedupe basis: (H=date, S=url)
         if not law_is_existing:
             output_rows_to_append.append({
                 "type": "law",
@@ -829,7 +831,6 @@ def run_scrape(request=None):
             if law_date and law_url:
                 primary_pairs.add((law_date, law_url))
 
-        # SECONDARY dedupe: only within same primary block (until next primary)
         law_id_key = (law.get("id") or "").replace("NL/", "")
         regs_for_law = reg_map.get(law_id_key, [])
 
@@ -840,6 +841,9 @@ def run_scrape(request=None):
             reg_title = reg.get("title", "")
             reg_date  = reg.get("date", "")
             reg_url   = (reg.get("url") or "").strip()
+
+            if should_ignore_url(reg_url):
+                continue
 
             if reg_url:
                 scraped_urls.add(reg_url)
@@ -862,9 +866,8 @@ def run_scrape(request=None):
     log(f"[handler] rows to append at bottom: {len(output_rows_to_append)}")
     log(f"[handler] laws with new regs to insert under existing primaries: {len(regs_to_insert_under_existing)}")
 
-    # ---- Plan existing inserts ----
-    insert_ops_existing = []     # (orig_start_row, count)
-    segments_existing = []       # (orig_start_row, rows_list)
+    insert_ops_existing = []
+    segments_existing = []
 
     blocks_with_regs = []
     for law_url, reg_rows in regs_to_insert_under_existing.items():
@@ -876,7 +879,6 @@ def run_scrape(request=None):
         insertion_row = block["end_row"] + 1
         blocks_with_regs.append((insertion_row, law_url, reg_rows))
 
-    # IMPORTANT: we still insert bottom->top
     blocks_with_regs.sort(key=lambda x: x[0], reverse=True)
 
     for insertion_row, law_url, reg_rows in blocks_with_regs:
@@ -893,7 +895,6 @@ def run_scrape(request=None):
 
     total_inserted_existing = sum(c for _, c in insert_ops_existing)
 
-    # ---- Plan append (final coordinates) ----
     segments_append = []
     append_start_row = None
     append_op = None
@@ -905,22 +906,19 @@ def run_scrape(request=None):
         append_op = (append_start_row, len(output_rows_to_append))
         segments_append.append((append_start_row, output_rows_to_append))
 
-    # ---- Execute inserts in ONE call (#2) ----
     batch_insert_rows_with_format(svc, sheet_id, insert_ops_existing, append_op)
-
-    # ---- Execute ALL value writes in ONE call (#1 + #3) ----
-    # FIXED: existing segments are shifted before writing so we don't create blank inserted rows
     batch_write_segments_values(svc, segments_existing, segments_append, insert_ops_existing)
 
-    # ---- Color ambiguous (only new laws in append block) ----
     ambiguous_rows = []
     if append_start_row is not None and ambiguous_positions_new:
         ambiguous_rows = [append_start_row + idx for idx in ambiguous_positions_new]
         color_rows_orange(svc, sheet_id, ambiguous_rows)
 
-    # ---- Black out stale existing rows (shift existing rows by <= rule) ----
+    # Blackening: ignore any existing rows with ignored URLs
     stale_rows = []
     for row_num, url_existing in all_url_rows:
+        if should_ignore_url(url_existing):
+            continue
         if url_existing and url_existing not in scraped_urls:
             stale_rows.append(shift_existing_row_after_inserts(row_num, insert_ops_existing))
     color_rows_black(svc, sheet_id, stale_rows)
@@ -940,7 +938,6 @@ def run_scrape(request=None):
     }
 
 
-# Alias for compatibility
 handler = run_scrape
 
 if __name__ == "__main__":

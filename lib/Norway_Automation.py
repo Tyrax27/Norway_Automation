@@ -15,7 +15,7 @@ LAWS_PKG = "gjeldende-lover.tar.bz2"
 REGS_PKG = "gjeldende-sentrale-forskrifter.tar.bz2"
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
-TAB_NAME = "Norway Trial"
+TAB_NAME = "Norway"
 
 
 # =========================
